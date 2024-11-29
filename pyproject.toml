@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dirigo_alazar"
+version = "0.1.0"
+description = "Plugin to use Alazar cards with Dirigo."
+authors = [
+    {name = "T. D. Weber", email = "tweber@mit.edu"}
+]
+license = {text = "MIT"}
+dependencies = []
+
+[project.entry-points."dirigo_digitizers"]
+alazar = "dirigo_alazar:AlazarDigitizer"
