@@ -597,7 +597,8 @@ class AlazarDigitizer(digitizer_interface.Digitizer):
     """
     Subclass implementing the dirigo Digitizer interface.
 
-    ATSApi has many enumeration which are used internally, but not returned to the end user
+    ATSApi has many enumerations. These are used privately within this module
+    but are not returned to the end user.
     """
     def __init__(self, system_id:int=1, board_id:int=1):
         # Check system
@@ -616,9 +617,13 @@ class AlazarDigitizer(digitizer_interface.Digitizer):
         self.channels = []
         for i in range(self._board.bsi.channels):
             self.channels.append(AlazarChannel(self._board, i))
+
         self.sample_clock = AlazarSampleClock(self._board)
+
         self.trigger = AlazarTrigger(self._board, self.channels)
+
         self.acquire = AlazarAcquire(self._board, self.channels)
+        
         self.aux_io = AlazarAuxillaryIO(self._board)
 
 
