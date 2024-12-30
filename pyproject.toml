@@ -10,7 +10,9 @@ authors = [
     {name = "T. D. Weber", email = "tweber@mit.edu"}
 ]
 license = {text = "MIT"}
-dependencies = []
+dependencies = [
+    "atsbindings"
+]
 
 [project.entry-points."dirigo_digitizers"]
 alazar = "dirigo_alazar:AlazarDigitizer"
