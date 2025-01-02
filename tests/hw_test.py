@@ -28,7 +28,8 @@ digitizer.trigger.level = 0
 digitizer.acquire.pre_trigger_samples = 0
 digitizer.acquire.record_length = 2048
 digitizer.acquire.records_per_buffer = 256
-digitizer.acquire.buffers_per_acquisition = 4
+digitizer.acquire.buffers_per_acquisition = 16
+digitizer.acquire.buffers_allocated = 4
 
 digitizer.acquire.start()
 time.sleep(0.02)

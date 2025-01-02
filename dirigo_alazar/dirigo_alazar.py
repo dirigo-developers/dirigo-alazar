@@ -1,5 +1,6 @@
-import numpy as np
+from functools import cached_property
 
+import numpy as np
 from atsbindings import Ats, System, Buffer
 from atsbindings import Board as AlazarBoard
 
@@ -624,7 +625,9 @@ class AlazarAcquire(digitizer.Acquire):
         self._buffers_acquired = 0
         channels_bit_mask = sum([c.enabled * Ats.Channels.from_int(i) 
                                 for i,c in enumerate(self._channels)])
-        flags = self._adma_mode | Ats.ADMAFlags.ADMA_EXTERNAL_STARTCAPTURE
+        flags = self._adma_mode | Ats.ADMAFlags.ADMA_EXTERNAL_STARTCAPTURE 
+        if self.supports_interleaved:
+            flags = flags | Ats.ADMAFlags.ADMA_INTERLEAVE_SAMPLES
 
         if self.buffers_per_acquisition == float('inf'):
             records_per_acquisition = 0x7FFFFFFF
@@ -651,6 +654,7 @@ class AlazarAcquire(digitizer.Acquire):
                 records_per_buffer=self.records_per_buffer,
                 samples_per_record=self.record_length,
                 include_header=True,
+                interleave_samples=self.supports_interleaved
             )
             self._buffers.append(buffer)
             self._board.post_async_buffer(buffer.address, buffer.size)
@@ -695,6 +699,29 @@ class AlazarAcquire(digitizer.Acquire):
             self._board.set_record_size(
                 pre_trigger_samples=self._pre_trigger_samples, 
                 post_trigger_samples=self._record_length)
+            
+    @cached_property
+    def supports_interleaved(self) -> bool:
+        """Returns whether interleaved acquisition is supported."""
+        # Reference:
+        # https://docs.alazartech.com/ats-sdk-user-guide/latest/reference/AlazarBeforeAsyncRead.html#c.ALAZAR_ADMA_FLAGS.ADMA_INTERLEAVE_SAMPLES
+        unsupported_boards = {
+            Ats.BoardType.ATS310, # all 3-digit boards are PCI (not PCIe)
+            Ats.BoardType.ATS315,
+            Ats.BoardType.ATS330,
+            Ats.BoardType.ATS335,
+            Ats.BoardType.ATS460,
+            Ats.BoardType.ATS660,
+            Ats.BoardType.ATS665,
+            Ats.BoardType.ATS850,
+            Ats.BoardType.ATS855,
+            Ats.BoardType.ATS860,
+            Ats.BoardType.ATS9462 # and ATS9462 (see reference)
+        }
+        if self._board.get_board_kind() in unsupported_boards:
+            return False
+        else:
+            return True
 
 
 class AlazarAuxillaryIO(digitizer.AuxillaryIO):
