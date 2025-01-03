@@ -4,7 +4,7 @@ import numpy as np
 from atsbindings import Ats, System, Buffer
 from atsbindings import Board as AlazarBoard
 
-import dirigo
+from dirigo import units
 from dirigo.hw_interfaces import digitizer
 
 
@@ -160,7 +160,7 @@ class AlazarSampleClock(digitizer.SampleClock):
         # Set parameters to None to signify that they have not been initialized
         self._source: Ats.ClockSources = None
         self._rate: Ats.SampleRates = None
-        self._external_rate: dirigo.Frequency = None # Used only with external clock source, otherwise ignored
+        self._external_rate: units.Frequency = None # Used only with external clock source, otherwise ignored
         
         # Default clock edge, set to rising
         self._edge: Ats.ClockEdges = Ats.ClockEdges.CLOCK_EDGE_RISING
@@ -201,7 +201,7 @@ class AlazarSampleClock(digitizer.SampleClock):
         return {str(s) for s in self._board.bsi.supported_clocks}
 
     @property
-    def rate(self) -> dirigo.SampleRate:
+    def rate(self) -> units.SampleRate:
         """
         Depending on the clock source, either the internal sample clock rate, or
         the user-specified external clock rate.
@@ -209,13 +209,13 @@ class AlazarSampleClock(digitizer.SampleClock):
         if self._source == Ats.ClockSources.INTERNAL_CLOCK:
             if self._rate:
                 # convert atswrapper enum into a dirigo.Frequency object
-                return dirigo.SampleRate(self._rate.to_hertz) 
+                return units.SampleRate(self._rate.to_hertz) 
         elif "external" in str(self._source).lower():
             if self._external_rate:
                 return str(self._external_rate) 
     
     @rate.setter
-    def rate(self, rate: dirigo.SampleRate):
+    def rate(self, rate: units.SampleRate):
         if self.source is None:
             raise ValueError("`source` must be set before attempting to set `rate`")
 
@@ -242,12 +242,12 @@ class AlazarSampleClock(digitizer.SampleClock):
                                  f"Max: {valid_range.max}")
 
     @property
-    def rate_options(self) -> set[dirigo.SampleRate] | dirigo.FrequencyRange:
+    def rate_options(self) -> set[units.SampleRate] | units.FrequencyRange:
         if self._source == Ats.ClockSources.INTERNAL_CLOCK:
-            return {dirigo.SampleRate(option.to_hertz) for option in self._board.bsi.sample_rates}
+            return {units.SampleRate(option.to_hertz) for option in self._board.bsi.sample_rates}
         
         elif "external" in str(self._source).lower():
-            return dirigo.FrequencyRange(
+            return units.FrequencyRange(
                 **self._board.bsi.external_clock_frequency_ranges(self._source)
             ) # TODO, haven't tested this conversion
     
@@ -354,14 +354,14 @@ class AlazarTrigger(digitizer.Trigger):
         return {str(s) for s in options}
 
     @property
-    def level(self) -> dirigo.Voltage:
+    def level(self) -> units.Voltage:
         #TODO switch for external trigger?
         if self.source and self._level:
             trig_source_range = self._channels[self._source.channel_index]._range.to_volts
-            return dirigo.Voltage((self._level - 128) * trig_source_range / 127)
+            return units.Voltage((self._level - 128) * trig_source_range / 127)
         
     @level.setter
-    def level(self, level: dirigo.Voltage):
+    def level(self, level: units.Voltage):
         if not self._source:
             raise RuntimeError("Trigger source must be set before trigger level")
         if self._source == Ats.TriggerSources.TRIG_DISABLE:
@@ -377,7 +377,7 @@ class AlazarTrigger(digitizer.Trigger):
         self._set_trigger_operation()
 
     @property
-    def level_limits(self) -> dirigo.VoltageRange:
+    def level_limits(self) -> units.VoltageRange:
         if not self.source:
             return None
         
@@ -393,7 +393,7 @@ class AlazarTrigger(digitizer.Trigger):
             source_channel = self._channels[self._source.channel_index]
             trigger_source_range = source_channel._range.to_volts
 
-        return dirigo.VoltageRange(
+        return units.VoltageRange(
             min=-abs(trigger_source_range),
             max=abs(trigger_source_range)
         )
@@ -504,11 +504,11 @@ class AlazarAcquire(digitizer.Acquire):
         self._buffers: list[Buffer] = None
         
     @property
-    def trigger_delay(self) -> dirigo.Time:
-        return dirigo.Time(self._trigger_delay / self._sample_clock.rate)
+    def trigger_delay(self) -> units.Time:
+        return units.Time(self._trigger_delay / self._sample_clock.rate)
     
     @property
-    def trigger_delay(self, delay: dirigo.Time):
+    def trigger_delay(self, delay: units.Time):
         if delay < 0:
             raise ValueError("Trigger delay must be non-negative.")
         
@@ -521,10 +521,10 @@ class AlazarAcquire(digitizer.Acquire):
         self._board.set_trigger_delay(self._trigger_delay)
 
     @property
-    def trigger_delay_resolution(self) -> dirigo.Time:
+    def trigger_delay_resolution(self) -> units.Time:
         # samples per timestamp resolution is also the resolution for trigger delay
         spts = self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
-        return dirigo.Time(spts / self._sample_clock.rate)
+        return units.Time(spts / self._sample_clock.rate)
 
     # TODO, combine the next three with trigger_delay
     @property
@@ -564,8 +564,8 @@ class AlazarAcquire(digitizer.Acquire):
         self._set_record_size()
 
     @property
-    def record_duration(self) -> dirigo.Time:
-        return dirigo.Time(self._record_length / self._sample_clock.rate)
+    def record_duration(self) -> units.Time:
+        return units.Time(self._record_length / self._sample_clock.rate)
 
     @property
     def record_length_minimum(self) -> int:
