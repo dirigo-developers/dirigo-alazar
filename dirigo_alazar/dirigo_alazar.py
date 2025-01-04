@@ -492,14 +492,15 @@ class AlazarAcquire(digitizer.Acquire):
         self._channels = channels
 
         # Set some defaults
-        self._trigger_delay: int = 0 # in number samples
         self._pre_trigger_samples: int = 0
 
+        self._trigger_delay: int = None # in number samples
         self._record_length: int = None
         self._records_per_buffer: int = None
         self._buffers_per_acquisition: int | float = None
 
         self._adma_mode: Ats.ADMAModes = Ats.ADMAModes.ADMA_TRADITIONAL_MODE # TODO allow setting NPT mode
+        self._timestamps_enabled: bool = False
 
         self._buffers_allocated: int = None
         self._buffers: list[Buffer] = None
@@ -512,35 +513,24 @@ class AlazarAcquire(digitizer.Acquire):
     def trigger_delay_samples(self, samples: int):
         if not isinstance(samples, int):
             raise ValueError("`trigger_delay_samples` must be set with an integer")
-        if not samples % self.trigger_delay_sample_resolution:
+        if not (0 <= samples < 9_999_999): # not clear whether this includes 9,999,999 or not, assume not
+            raise ValueError(f"`trigger_delay_samples` outside settable range, got {samples}")
+        if samples % self.trigger_delay_sample_resolution:
             raise ValueError(
                 f"Attempted to set `trigger_delay_samples` {samples}, must"
                 f"be divisible by {self.trigger_delay_sample_resolution}."
             )
+        self._board.set_trigger_delay(samples)
         self._trigger_delay = samples
 
     @property
     def trigger_delay_duration(self) -> units.Time:
         return units.Time(self._trigger_delay / self._sample_clock.rate)
-    
-    # @property
-    # def trigger_delay_duration(self, delay: units.Time):
-    #     if delay < 0:
-    #         raise ValueError("Trigger delay must be non-negative.")
-        
-    #     delay_res = self.trigger_delay_resolution
-
-    #     if delay % delay_res != 0:
-    #         raise ValueError(f"Attempted to set trigger delay {delay}, must"
-    #                          f"be divisible by {delay_res}")
-    #     self._trigger_delay = delay * self._sample_clock.rate # stored privately in number samples
-    #     self._board.set_trigger_delay(self._trigger_delay)
 
     @property
-    def trigger_delay_sample_resolution(self) -> units.Time:
+    def trigger_delay_sample_resolution(self) -> int:
         # samples per timestamp resolution is also the resolution for trigger delay
-        spts = self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
-        return units.Time(spts / self._sample_clock.rate)
+        return self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
 
     # TODO, combine the next three with trigger_delay
     @property
@@ -644,6 +634,11 @@ class AlazarAcquire(digitizer.Acquire):
         flags = self._adma_mode | Ats.ADMAFlags.ADMA_EXTERNAL_STARTCAPTURE 
         if self.supports_interleaved:
             flags = flags | Ats.ADMAFlags.ADMA_INTERLEAVE_SAMPLES
+        if self.timestamps_enabled:
+            if self._adma_mode == Ats.ADMAModes.ADMA_TRADITIONAL_MODE:
+                flags = flags | Ats.ADMAFlags.ADMA_ENABLE_RECORD_HEADERS
+            elif self._adma_mode == Ats.ADMAModes.ADMA_NPT:
+                flags = flags | Ats.ADMAFlags.ADMA_ENABLE_RECORD_FOOTERS
 
         if self.buffers_per_acquisition == float('inf'):
             records_per_acquisition = 0x7FFFFFFF
@@ -662,6 +657,13 @@ class AlazarAcquire(digitizer.Acquire):
         )
 
         # Allocate buffers
+        if self.timestamps_enabled:
+            if self._adma_mode == Ats.ADMAModes.ADMA_TRADITIONAL_MODE:
+                headers = True
+                footers = False
+            elif self._adma_mode == Ats.ADMAModes.ADMA_NPT:
+                headers = False
+                footers = True
         self._buffers = []
         for _ in range(self.buffers_allocated): 
             buffer = Buffer(
@@ -669,7 +671,8 @@ class AlazarAcquire(digitizer.Acquire):
                 channels=self.n_channels_enabled,
                 records_per_buffer=self.records_per_buffer,
                 samples_per_record=self.record_length,
-                include_header=True,
+                include_header=headers,
+                include_footer=footers,
                 interleave_samples=self.supports_interleaved
             )
             self._buffers.append(buffer)
@@ -682,13 +685,17 @@ class AlazarAcquire(digitizer.Acquire):
         return self._buffers_acquired
 
     def get_next_completed_buffer(self, blocking: bool = True) -> np.ndarray: # TODO a non-blocking version of this
+        """Retrieve the next available buffer"""
         # Determine the index of the buffer, retrieve reference
         buffer_index = self._buffers_acquired % self.buffers_allocated
         buffer = self._buffers[buffer_index]
 
         # Wait for the buffer to complete and copy data when ready
         self._board.wait_async_buffer_complete(buffer.address)
-        tmp_data = buffer.get_data() # TODO, return headers
+        tmp_data = buffer.get_data() # TODO, return TIMESTAMPS
+        tstamps = buffer.get_timestamps()
+        print(tstamps[2]-tstamps[1])
+
         self._buffers_acquired += 1
 
         # Repost buffer
@@ -708,6 +715,23 @@ class AlazarAcquire(digitizer.Acquire):
     def adma_mode(self, new_adma_mode: str):
         """Set ADMA mode (default without using setter is 'Traditional')"""
         self._adma_mode = Ats.ADMAModes.from_str(str(new_adma_mode))
+
+    @property
+    def timestamps_enabled(self) -> bool:
+        """
+        Enables hardware timestamps. 
+
+        In Traditional ADMA mode, enables headers. In NPT ADMA mode, enables
+        footers.
+        """
+        return self._timestamps_enabled
+    
+    @timestamps_enabled.setter
+    def timestamps_enabled(self, enable: bool):
+        supported_modes = {Ats.ADMAModes.ADMA_TRADITIONAL_MODE, Ats.ADMAModes.ADMA_NPT}
+        if enable and self._adma_mode not in supported_modes:
+            raise ValueError("Timestamps are only available in Traditional or NPT AMDA mode.")
+        self._timestamps_enabled = enable
 
     def _set_record_size(self):
         """Helper"""
@@ -828,16 +852,16 @@ class AlazarDigitizer(digitizer.Digitizer):
 
         self._board = AlazarBoard(system_id, board_id)
 
-        self.channels = []
+        self.channels: list[AlazarChannel] = []
         for i in range(self._board.bsi.channels):
             self.channels.append(AlazarChannel(self._board, i))
 
-        self.sample_clock = AlazarSampleClock(self._board)
+        self.sample_clock: AlazarSampleClock = AlazarSampleClock(self._board)
 
-        self.trigger = AlazarTrigger(self._board, self.channels)
+        self.trigger: AlazarTrigger = AlazarTrigger(self._board, self.channels)
 
-        self.acquire = AlazarAcquire(self._board, self.sample_clock, self.channels)
+        self.acquire: AlazarAcquire = AlazarAcquire(self._board, self.sample_clock, self.channels)
         
-        self.aux_io = AlazarAuxillaryIO(self._board)
+        self.aux_io: AlazarAuxillaryIO = AlazarAuxillaryIO(self._board)
 
 

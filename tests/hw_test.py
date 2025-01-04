@@ -25,7 +25,8 @@ digitizer.trigger.slope = "Positive"
 digitizer.trigger.level = 0
 
 # Acquire
-digitizer.acquire.pre_trigger_samples = 0
+digitizer.acquire.trigger_delay_samples = 100
+digitizer.acquire.timestamps_enabled = True
 digitizer.acquire.record_length = 2048
 digitizer.acquire.records_per_buffer = 256
 digitizer.acquire.buffers_per_acquisition = 16
