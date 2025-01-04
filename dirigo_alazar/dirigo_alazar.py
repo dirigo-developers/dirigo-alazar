@@ -472,7 +472,8 @@ class AlazarAcquire(digitizer.Acquire):
     Alazar Tech API's asynchronous DMA (ADMA) mode.
 
     Properties:
-        trigger_delay (dirigo.Time): Delay between the trigger event and acquisition start.
+        trigger_delay_samples (int): Delay between the trigger event and acquistion, in sample periods.
+        trigger_delay_duration (dirigo.Time): Delay between the trigger event and acquisition start, in time.
         record_length (int): Number of samples per record.
         record_duration (dirigo.Time): Duration of record acquistion.
         records_per_buffer (int): Number of records per buffer.
@@ -502,26 +503,41 @@ class AlazarAcquire(digitizer.Acquire):
 
         self._buffers_allocated: int = None
         self._buffers: list[Buffer] = None
-        
+
     @property
-    def trigger_delay(self) -> units.Time:
+    def trigger_delay_samples(self) -> int:
+        return self._trigger_delay
+
+    @trigger_delay_samples.setter
+    def trigger_delay_samples(self, samples: int):
+        if not isinstance(samples, int):
+            raise ValueError("`trigger_delay_samples` must be set with an integer")
+        if not samples % self.trigger_delay_sample_resolution:
+            raise ValueError(
+                f"Attempted to set `trigger_delay_samples` {samples}, must"
+                f"be divisible by {self.trigger_delay_sample_resolution}."
+            )
+        self._trigger_delay = samples
+
+    @property
+    def trigger_delay_duration(self) -> units.Time:
         return units.Time(self._trigger_delay / self._sample_clock.rate)
     
-    @property
-    def trigger_delay(self, delay: units.Time):
-        if delay < 0:
-            raise ValueError("Trigger delay must be non-negative.")
+    # @property
+    # def trigger_delay_duration(self, delay: units.Time):
+    #     if delay < 0:
+    #         raise ValueError("Trigger delay must be non-negative.")
         
-        delay_res = self.trigger_delay_resolution
+    #     delay_res = self.trigger_delay_resolution
 
-        if delay % delay_res != 0:
-            raise ValueError(f"Attempted to set trigger delay {delay}, must"
-                             f"be divisible by {delay_res}")
-        self._trigger_delay = delay * self._sample_clock.rate # stored privately in number samples
-        self._board.set_trigger_delay(self._trigger_delay)
+    #     if delay % delay_res != 0:
+    #         raise ValueError(f"Attempted to set trigger delay {delay}, must"
+    #                          f"be divisible by {delay_res}")
+    #     self._trigger_delay = delay * self._sample_clock.rate # stored privately in number samples
+    #     self._board.set_trigger_delay(self._trigger_delay)
 
     @property
-    def trigger_delay_resolution(self) -> units.Time:
+    def trigger_delay_sample_resolution(self) -> units.Time:
         # samples per timestamp resolution is also the resolution for trigger delay
         spts = self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
         return units.Time(spts / self._sample_clock.rate)
