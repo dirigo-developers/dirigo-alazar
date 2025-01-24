@@ -5,7 +5,7 @@ from atsbindings import Ats, System, Buffer
 from atsbindings import Board as AlazarBoard
 
 from dirigo import units
-from dirigo.hw_interfaces import digitizer
+from dirigo.hw_interfaces import digitizer  
 
 
 """
@@ -212,7 +212,7 @@ class AlazarSampleClock(digitizer.SampleClock):
                 return units.SampleRate(self._rate.to_hertz) 
         elif "external" in str(self._source).lower():
             if self._external_rate:
-                return str(self._external_rate) 
+                return self._external_rate 
     
     @rate.setter
     def rate(self, rate: units.SampleRate):
@@ -230,14 +230,15 @@ class AlazarSampleClock(digitizer.SampleClock):
 
         elif "external" in str(self._source).lower():
             # check that the proposed external clock is valid
-            proposed_rate = float(rate)
+            if not isinstance(rate, units.SampleRate):
+                rate  = units.SampleRate(rate)
             valid_range = self._board.bsi.external_clock_frequency_ranges(self._source)
-            if valid_range.min < proposed_rate < valid_range.max:
-                self._external_rate = proposed_rate
+            if valid_range.min < rate < valid_range.max:
+                self._external_rate = rate
             else:
                 raise ValueError(f"Tried setting external clock frequency outside "
                                  f"acceptable range for source: {self._source} "
-                                 f"Requested: {proposed_rate}, "
+                                 f"Requested: {rate}, "
                                  f"Min: {valid_range.min}"
                                  f"Max: {valid_range.max}")
 
@@ -684,7 +685,8 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, blocking: bool = True) -> np.ndarray: # TODO a non-blocking version of this
+    def get_next_completed_buffer(self, blocking: bool = True) -> digitizer.DigitizerBuffer: 
+        # TODO a non-blocking version of this
         """Retrieve the next available buffer"""
         # Determine the index of the buffer, retrieve reference
         buffer_index = self._buffers_acquired % self.buffers_allocated
@@ -692,16 +694,20 @@ class AlazarAcquire(digitizer.Acquire):
 
         # Wait for the buffer to complete and copy data when ready
         self._board.wait_async_buffer_complete(buffer.address)
-        tmp_data = buffer.get_data() # TODO, return TIMESTAMPS
-        tstamps = buffer.get_timestamps()
-        print(tstamps[2]-tstamps[1])
+
+        sec_per_tic = self._board.bsi.samples_per_timestamp(self.n_channels_enabled) \
+            / self._sample_clock.rate 
+        buf = digitizer.DigitizerBuffer(
+            data=buffer.get_data(),
+            timestamps=sec_per_tic * np.array(buffer.get_timestamps())
+        )
 
         self._buffers_acquired += 1
 
         # Repost buffer
         self._board.post_async_buffer(buffer.address, buffer.size)
 
-        return tmp_data
+        return buf
         
     def stop(self):
         self._board.abort_async_read()
@@ -863,5 +869,10 @@ class AlazarDigitizer(digitizer.Digitizer):
         self.acquire: AlazarAcquire = AlazarAcquire(self._board, self.sample_clock, self.channels)
         
         self.aux_io: AlazarAuxillaryIO = AlazarAuxillaryIO(self._board)
+
+    @property
+    def bit_depth(self) -> int:
+        _, bit_depth = self._board.get_channel_info()
+        return bit_depth
 
 
