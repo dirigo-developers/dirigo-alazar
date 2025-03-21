@@ -6,6 +6,7 @@ from atsbindings import Board as AlazarBoard
 
 from dirigo import units
 from dirigo.hw_interfaces import digitizer  
+from dirigo.sw_interfaces.acquisition import AcquisitionBuffer
 
 
 """
@@ -685,7 +686,7 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, blocking: bool = True) -> digitizer.DigitizerBuffer: 
+    def get_next_completed_buffer(self, blocking: bool = True) -> AcquisitionBuffer: 
         # TODO a non-blocking version of this
         """Retrieve the next available buffer"""
         # Determine the index of the buffer, retrieve reference
@@ -697,7 +698,7 @@ class AlazarAcquire(digitizer.Acquire):
 
         sec_per_tic = self._board.bsi.samples_per_timestamp(self.n_channels_enabled) \
             / self._sample_clock.rate 
-        buf = digitizer.DigitizerBuffer(
+        buf = AcquisitionBuffer(
             data=buffer.get_data(),
             timestamps=sec_per_tic * np.array(buffer.get_timestamps())
         )
