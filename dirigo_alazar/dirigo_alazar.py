@@ -872,8 +872,20 @@ class AlazarDigitizer(digitizer.Digitizer):
         self.aux_io: AlazarAuxillaryIO = AlazarAuxillaryIO(self._board)
 
     @property
-    def bit_depth(self) -> int:
+    def bit_depth(self) -> int: # TODO, should this be a property of channels?
         _, bit_depth = self._board.get_channel_info()
         return bit_depth
+    
+    @property
+    def data_range(self) -> units.ValueRange:
+        """
+        Alazar API returns full-scale 16-bit data regardless of whether the
+        digitizer ADC is 16-bit, except for 8-bit cards, which will return 8-bit 
+        data.
+        """
+        if self.bit_depth > 8:
+            return units.ValueRange(min=0, max=2**16 - 1)
+        else:
+            return units.ValueRange(min=0, max=255)
 
 
