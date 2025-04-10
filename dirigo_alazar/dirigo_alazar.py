@@ -41,7 +41,6 @@ class AlazarChannel(digitizer.Channel):
     def __init__(self, board: AlazarBoard, channel_index: int):
         self._board = board
         self._index = channel_index
-        self._enabled = False # Disabled as default
 
         # Set parameters to None to indicate they have not been initialized 
         # (though they are set to something on the digitizer)
@@ -99,8 +98,11 @@ class AlazarChannel(digitizer.Channel):
             return str(self._range)
     
     @range.setter
-    def range(self, rng: str):
-        range_enum = Ats.InputRanges.from_str(rng)
+    def range(self, rng: units.VoltageRange):
+        # (supported) Alazar input ranges are always bipolar
+        if abs(rng.max) != abs(rng.min):
+            raise ValueError("Voltage range must be bipolar: e.g. +/-1V")
+        range_enum = Ats.InputRanges.from_str(str(rng.max))
         current_ranges = self._board.bsi.input_ranges(self._impedance)
         if range_enum not in current_ranges:
             valid_options = ', '.join([str(s) for s in current_ranges])
@@ -114,14 +116,6 @@ class AlazarChannel(digitizer.Channel):
         if self._impedance:
             options = self._board.bsi.input_ranges(self._impedance)
             return {str(s) for s in options}
-
-    @property
-    def enabled(self) -> bool:
-        return self._enabled
-    
-    @enabled.setter
-    def enabled(self, enabled: bool):
-        self._enabled = enabled
 
     def _set_input_control(self):
         """Helper method to apply input control settings to the digitizer.
