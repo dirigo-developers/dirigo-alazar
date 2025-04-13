@@ -189,8 +189,6 @@ class AlazarSampleClock(digitizer.SampleClock):
             self._external_rate = None
         # TODO, other sources?
 
-        #self._set_capture_clock() -- why commented?
-
     @property
     def source_options(self) -> set[str]:
         return {str(s) for s in self._board.bsi.supported_clocks}
@@ -613,6 +611,11 @@ class AlazarAcquire(digitizer.Acquire):
             raise ValueError("Tried setting buffer allocation below 1")
         self._buffers_allocated = buffers
 
+    @cached_property
+    def _bit_depth(self) -> int: 
+        _, bit_depth = self._board.get_channel_info()
+        return bit_depth
+
     def start(self):
         # Check whether essential parameters have been set
         if not self.record_length:
@@ -673,6 +676,10 @@ class AlazarAcquire(digitizer.Acquire):
             )
             self._buffers.append(buffer)
             self._board.post_async_buffer(buffer.address, buffer.size)
+
+        self._sec_per_tic = \
+            self._board.bsi.samples_per_timestamp(self.n_channels_enabled) \
+            / self._sample_clock.rate 
         
         self._board.start_capture()
 
@@ -690,11 +697,14 @@ class AlazarAcquire(digitizer.Acquire):
         # Wait for the buffer to complete and copy data when ready
         self._board.wait_async_buffer_complete(buffer.address)
 
-        sec_per_tic = self._board.bsi.samples_per_timestamp(self.n_channels_enabled) \
-            / self._sample_clock.rate 
+        # ATS API returns offset unsigned 16 bit data, full scale 16 bit 
+        # regardless of the digitizer bit depth. Fix this before passing along.
+        signed_data = np.bitwise_xor(buffer.get_data(), np.uint16(0x8000)).view(np.int16)
+
         buf = AcquisitionBuffer(
-            data=buffer.get_data(),
-            timestamps=sec_per_tic * np.array(buffer.get_timestamps())
+            #data=buffer.get_data(),
+            data=signed_data >> (16 - self._bit_depth), # bit shift signed data to native bit depth
+            timestamps=self._sec_per_tic * np.array(buffer.get_timestamps())
         )
 
         self._buffers_acquired += 1
@@ -866,20 +876,14 @@ class AlazarDigitizer(digitizer.Digitizer):
         self.aux_io: AlazarAuxillaryIO = AlazarAuxillaryIO(self._board)
 
     @property
-    def bit_depth(self) -> int: # TODO, should this be a property of channels?
-        _, bit_depth = self._board.get_channel_info()
-        return bit_depth
-    
-    @property
+    def bit_depth(self) -> int: 
+        return self.acquire._bit_depth
+
+    @cached_property
     def data_range(self) -> units.ValueRange:
-        """
-        Alazar API returns full-scale 16-bit data regardless of whether the
-        digitizer ADC is 16-bit, except for 8-bit cards, which will return 8-bit 
-        data.
-        """
-        if self.bit_depth > 8:
-            return units.ValueRange(min=0, max=2**16 - 1)
-        else:
-            return units.ValueRange(min=0, max=255)
+        return units.ValueRange(
+            min=-2**(self.bit_depth-1),
+            max=2**(self.bit_depth-1) - 1 
+        )
 
 
