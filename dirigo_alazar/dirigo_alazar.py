@@ -701,6 +701,11 @@ class AlazarAcquire(digitizer.Acquire):
         # regardless of the digitizer bit depth. Fix this before passing along.
         signed_data = np.bitwise_xor(buffer.get_data(), np.uint16(0x8000)).view(np.int16)
 
+        # Invert channels if necessary (TODO, may be slightly faster to broadcast multiply a +/-1 vector)
+        for i, invert in enumerate(self._inverted_channels):
+            if invert:
+                signed_data[...,i] = -signed_data[...,i] 
+
         buf = AcquisitionBuffer(
             #data=buffer.get_data(),
             data=signed_data >> (16 - self._bit_depth), # bit shift signed data to native bit depth
