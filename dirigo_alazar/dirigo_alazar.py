@@ -1,4 +1,5 @@
 from functools import cached_property
+import time
 
 import numpy as np
 from atsbindings import Ats, System, Buffer
@@ -688,34 +689,42 @@ class AlazarAcquire(digitizer.Acquire):
         return self._buffers_acquired
 
     def get_next_completed_buffer(self, blocking: bool = True) -> AcquisitionBuffer: 
-        # TODO a non-blocking version of this
         """Retrieve the next available buffer"""
+        t = []
         # Determine the index of the buffer, retrieve reference
+        t.append(time.perf_counter())
         buffer_index = self._buffers_acquired % self.buffers_allocated
         buffer = self._buffers[buffer_index]
+        t.append(time.perf_counter())
 
         # Wait for the buffer to complete and copy data when ready
         self._board.wait_async_buffer_complete(buffer.address)
+        t.append(time.perf_counter())
 
         # ATS API returns offset unsigned 16 bit data, full scale 16 bit 
         # regardless of the digitizer bit depth. Fix this before passing along.
         signed_data = np.bitwise_xor(buffer.get_data(), np.uint16(0x8000)).view(np.int16)
+        t.append(time.perf_counter())
 
         # Invert channels if necessary (TODO, may be slightly faster to broadcast multiply a +/-1 vector)
         for i, invert in enumerate(self._inverted_channels):
             if invert:
                 signed_data[...,i] = -signed_data[...,i] 
+        t.append(time.perf_counter())
 
         buf = AcquisitionBuffer(
-            #data=buffer.get_data(),
             data=signed_data >> (16 - self._bit_depth), # bit shift signed data to native bit depth
             timestamps=self._sec_per_tic * np.array(buffer.get_timestamps())
         )
-
         self._buffers_acquired += 1
+        t.append(time.perf_counter())
 
         # Repost buffer
         self._board.post_async_buffer(buffer.address, buffer.size)
+        t.append(time.perf_counter())
+
+        dt = np.diff(t)*1000
+        print(f"INDEX: {dt[0]:.2f} | WAIT: {dt[1]:.2f} | FIX BITS: {dt[2]:.2f} | INVERT: {dt[3]:.2f} | MK BUF: {dt[4]:.2f} | REPOST: {dt[5]:.2f}")
 
         return buf
         
