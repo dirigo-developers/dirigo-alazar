@@ -11,7 +11,8 @@ authors = [
 ]
 license = {text = "MIT"}
 dependencies = [
-    "atsbindings"
+    "dirigo",
+    "atsbindings>=0.2.2"
 ]
 
 [project.entry-points."dirigo_digitizers"]

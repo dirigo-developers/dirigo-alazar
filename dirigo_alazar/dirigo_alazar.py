@@ -2,12 +2,14 @@ from functools import cached_property
 import time
 
 import numpy as np
+from numba import njit, prange, int16, uint16, types
+
 from atsbindings import Ats, System, Buffer
 from atsbindings import Board as AlazarBoard
 
 from dirigo import units
 from dirigo.hw_interfaces import digitizer  
-from dirigo.sw_interfaces.acquisition import AcquisitionBuffer
+from dirigo.sw_interfaces.acquisition import AcquisitionProduct
 
 
 """
@@ -458,6 +460,31 @@ class AlazarTrigger(digitizer.Trigger):
             )
 
 
+# explicit signature → earlier compilation & no object mode fallback
+sig = (types.uint16[:, :, :],  # buf  (uint16, C-contiguous)
+       types.int64)            # right_shift
+@njit(sig, parallel=True, fastmath=True, nogil=True, cache=True)
+def fix_alazar_inplace(buf: np.ndarray, right_shift: int):
+    """
+    In-place: offset-binary uint16  →  twos-complement uint16 pattern.
+
+    After the call, do   signed = buf.view(np.int16)   (zero-copy).
+    """
+    nr, ns, nc = buf.shape
+
+    for r in prange(nr):
+        for s in range(ns):
+            base = buf[r, s]          # 1-D uint16 view of the nc channels
+            for c in range(nc):
+                v = uint16(base[c] ^ 0x8000)        # remove offset
+
+                #if right_shift:                    # native-depth scaling
+                v = uint16((int16(v) >> right_shift) & 0xFFFF)
+
+                base[c] = v                        # write back *uint16*
+
+
+
 class AlazarAcquire(digitizer.Acquire):
     """
     Handles acquisition settings and data transfer for an Alazar Tech digitizer.
@@ -688,7 +715,7 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, blocking: bool = True) -> AcquisitionBuffer: 
+    def get_next_completed_buffer(self, acq_buf: AcquisitionProduct): 
         """Retrieve the next available buffer"""
         t = []
         # Determine the index of the buffer, retrieve reference
@@ -697,25 +724,21 @@ class AlazarAcquire(digitizer.Acquire):
         buffer = self._buffers[buffer_index]
         t.append(time.perf_counter())
 
-        # Wait for the buffer to complete and copy data when ready
+        # Wait for the buffer to complete and copy data when ready--want this to be long
         self._board.wait_async_buffer_complete(buffer.address)
         t.append(time.perf_counter())
 
-        # ATS API returns offset unsigned 16 bit data, full scale 16 bit 
+        buffer.get_data(acq_buf.data)
+        t.append(time.perf_counter())
+
+        # ATS API returns offset unsigned 16 bit data, fully scaled to 16 bits 
         # regardless of the digitizer bit depth. Fix this before passing along.
-        signed_data = np.bitwise_xor(buffer.get_data(), np.uint16(0x8000)).view(np.int16)
+        fix_alazar_inplace(acq_buf.data, 16 - self._bit_depth)
+        acq_buf.data.dtype = np.int16
         t.append(time.perf_counter())
 
-        # Invert channels if necessary (TODO, may be slightly faster to broadcast multiply a +/-1 vector)
-        for i, invert in enumerate(self._inverted_channels):
-            if invert:
-                signed_data[...,i] = -signed_data[...,i] 
-        t.append(time.perf_counter())
-
-        buf = AcquisitionBuffer(
-            data=signed_data >> (16 - self._bit_depth), # bit shift signed data to native bit depth
-            timestamps=self._sec_per_tic * np.array(buffer.get_timestamps())
-        )
+        # Retrieve timestamps
+        acq_buf.timestamps = self._sec_per_tic * np.array(buffer.get_timestamps())
         self._buffers_acquired += 1
         t.append(time.perf_counter())
 
@@ -724,9 +747,7 @@ class AlazarAcquire(digitizer.Acquire):
         t.append(time.perf_counter())
 
         dt = np.diff(t)*1000
-        print(f"INDEX: {dt[0]:.2f} | WAIT: {dt[1]:.2f} | FIX BITS: {dt[2]:.2f} | INVERT: {dt[3]:.2f} | MK BUF: {dt[4]:.2f} | REPOST: {dt[5]:.2f}")
-
-        return buf
+        print(f"INDEX: {dt[0]:.3f} | WAIT: {dt[1]:.3f} | GET DATA: {dt[2]:.3f} | FIX BITS: {dt[3]:.3f} | TSTAMPS: {dt[4]:.3f} | REPOST: {dt[5]:.3f}")
         
     def stop(self):
         self._board.abort_async_read()
