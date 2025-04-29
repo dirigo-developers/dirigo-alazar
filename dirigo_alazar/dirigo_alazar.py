@@ -746,8 +746,8 @@ class AlazarAcquire(digitizer.Acquire):
         self._board.post_async_buffer(buffer.address, buffer.size)
         t.append(time.perf_counter())
 
-        dt = np.diff(t)*1000
-        print(f"INDEX: {dt[0]:.3f} | WAIT: {dt[1]:.3f} | GET DATA: {dt[2]:.3f} | FIX BITS: {dt[3]:.3f} | TSTAMPS: {dt[4]:.3f} | REPOST: {dt[5]:.3f}")
+        #dt = np.diff(t)*1000
+        #print(f"INDEX: {dt[0]:.3f} | WAIT: {dt[1]:.3f} | GET DATA: {dt[2]:.3f} | FIX BITS: {dt[3]:.3f} | TSTAMPS: {dt[4]:.3f} | REPOST: {dt[5]:.3f}")
         
     def stop(self):
         self._board.abort_async_read()
@@ -915,8 +915,8 @@ class AlazarDigitizer(digitizer.Digitizer):
         return self.acquire._bit_depth
 
     @cached_property
-    def data_range(self) -> units.ValueRange:
-        return units.ValueRange(
+    def data_range(self) -> units.IntRange:
+        return units.IntRange(
             min=-2**(self.bit_depth-1),
             max=2**(self.bit_depth-1) - 1 
         )
