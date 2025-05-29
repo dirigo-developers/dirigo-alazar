@@ -1,4 +1,5 @@
 from functools import cached_property
+from typing import Optional, Any
 import time
 
 import numpy as np
@@ -37,7 +38,7 @@ class AlazarChannel(digitizer.Channel):
     Properties:
         index (int): The index of the channel (0-based).
         coupling (str): Signal coupling mode (e.g., "AC", "DC").
-        impedance (str): Input impedance setting (e.g., "50 Ohm", "1 MOhm").
+        impedance (str): Input impedance setting (e.g., 50 Ohm, 1 MOhm).
         range (str): Voltage range for the channel.
         enabled (bool): Indicates whether the channel is active for acquisition.
     """
@@ -47,9 +48,9 @@ class AlazarChannel(digitizer.Channel):
 
         # Set parameters to None to indicate they have not been initialized 
         # (though they are set to something on the digitizer)
-        self._coupling: Ats.Couplings = None
-        self._impedance: Ats.Impedances = None
-        self._range: Ats.InputRanges = None
+        self._coupling: Optional[Ats.Couplings] = None
+        self._impedance: Optional[Ats.Impedances] = None
+        self._range: Optional[Ats.InputRanges] = None
     
     @property
     def index(self) -> int:
@@ -57,8 +58,9 @@ class AlazarChannel(digitizer.Channel):
 
     @property
     def coupling(self) -> str:
-        if self._coupling:
-            return str(self._coupling)
+        if self._coupling is None:
+            raise RuntimeError("Coupling not initialized")
+        return str(self._coupling)
     
     @coupling.setter
     def coupling(self, coupling: str):
@@ -77,12 +79,14 @@ class AlazarChannel(digitizer.Channel):
 
     @property
     def impedance(self) -> str:
-        if self._impedance:
-            return str(self._impedance)
+        if self._impedance is None:
+            raise RuntimeError("Impedance not initialized")
+        return str(self._impedance)
     
     @impedance.setter
     def impedance(self, impedance: str):
-        impedance_enum = Ats.Impedances.from_str(impedance)
+        imp = int(units.Resistance(impedance))
+        impedance_enum = Ats.Impedances.from_ohms(imp)
         if impedance_enum not in self._board.bsi.input_impedances:
             valid_options = ', '.join([str(s) for s in self._board.bsi.input_impedances])
             raise ValueError(f"Invalid input impedance {impedance_enum}. "
@@ -97,16 +101,19 @@ class AlazarChannel(digitizer.Channel):
     
     @property
     def range(self) -> str:
-        if self._range:
-            return str(self._range)
+        if self._range is None:
+            raise RuntimeError("Range is not initialized")
+        return str(self._range)
     
     @range.setter
     def range(self, rng: units.VoltageRange):
         # (supported) Alazar input ranges are always bipolar
         if abs(rng.max) != abs(rng.min):
             raise ValueError("Voltage range must be bipolar: e.g. +/-1V")
-        range_enum = Ats.InputRanges.from_str(str(rng.max))
-        current_ranges = self._board.bsi.input_ranges(self._impedance)
+        range_enum = Ats.InputRanges.from_volts(rng.max)
+        if self._impedance is None:
+            raise RuntimeError("Impedance must be initialized before setting range")
+        current_ranges = self._board.bsi.input_ranges(self._impedance) # this takes a ATS Impedance object
         if range_enum not in current_ranges:
             valid_options = ', '.join([str(s) for s in current_ranges])
             raise ValueError(f"Invalid input impedance {range_enum}. "
@@ -116,16 +123,19 @@ class AlazarChannel(digitizer.Channel):
     
     @property
     def range_options(self) -> set[str]:
-        if self._impedance:
-            options = self._board.bsi.input_ranges(self._impedance)
-            return {str(s) for s in options}
+        if self._impedance is None:
+            raise RuntimeError("Impedance must be initialized before accessing range options")
+        options = self._board.bsi.input_ranges(self._impedance)
+        return {str(s) for s in options}
 
     def _set_input_control(self):
         """Helper method to apply input control settings to the digitizer.
 
         Ensures that all required properties are set before applying settings.
         """
-        if self.coupling and self.impedance and self._range:
+        if self._coupling is None or self._range is None or self._impedance is None:
+            return
+        else:
             self._board.input_control_ex(
                 channel=Ats.Channels.from_int(self.index),
                 coupling=self._coupling,
@@ -156,17 +166,18 @@ class AlazarSampleClock(digitizer.SampleClock):
         self._board = board
 
         # Set parameters to None to signify that they have not been initialized
-        self._source: Ats.ClockSources = None
-        self._rate: Ats.SampleRates = None
-        self._external_rate: units.Frequency = None # Used only with external clock source, otherwise ignored
+        self._source: Optional[Ats.ClockSources] = None
+        self._rate: Optional[Ats.SampleRates] = None
+        self._external_rate: Optional[units.SampleRate] = None # Used only with external clock source, otherwise ignored
         
         # Default clock edge, set to rising
         self._edge: Ats.ClockEdges = Ats.ClockEdges.CLOCK_EDGE_RISING
         
     @property
     def source(self) -> str:
-        if self._source:
-            return str(self._source)
+        if self._source is None:
+            raise RuntimeError("Source not initialized")
+        return str(self._source)
     
     @source.setter
     def source(self, source: str):
@@ -202,21 +213,27 @@ class AlazarSampleClock(digitizer.SampleClock):
         Depending on the clock source, either the internal sample clock rate, or
         the user-specified external clock rate.
         """
+        if self._source is None:
+            raise RuntimeError("Source must be initialized before accessing rate")
         if self._source == Ats.ClockSources.INTERNAL_CLOCK:
-            if self._rate:
-                # convert atswrapper enum into a dirigo.Frequency object
-                return units.SampleRate(self._rate.to_hertz) 
+            if self._rate is None:
+                raise RuntimeError("External rate not initialized")
+            # convert atswrapper enum into a dirigo.Frequency object
+            return units.SampleRate(self._rate.to_hertz) 
         elif "external" in str(self._source).lower():
-            if self._external_rate:
-                return self._external_rate 
+            if self._external_rate is None:
+                raise RuntimeError("External rate not initialized")
+            return units.SampleRate(self._external_rate)
+        else:
+            raise RuntimeError("Unsupported clock configuration:", str(self._source))
     
     @rate.setter
     def rate(self, rate: units.SampleRate):
-        if self.source is None:
+        if self._source is None:
             raise ValueError("`source` must be set before attempting to set `rate`")
 
         if self._source == Ats.ClockSources.INTERNAL_CLOCK:
-            clock_rate_enum = Ats.SampleRates.from_str(rate)
+            clock_rate_enum = Ats.SampleRates.from_hertz(int(rate))
             if clock_rate_enum not in self._board.bsi.sample_rates:
                 valid_options = ', '.join([str(s) for s in self._board.bsi.sample_rates])
                 raise ValueError(f"Invalid sample clock rate: {clock_rate_enum}. "
@@ -226,8 +243,6 @@ class AlazarSampleClock(digitizer.SampleClock):
 
         elif "external" in str(self._source).lower():
             # check that the proposed external clock is valid
-            if not isinstance(rate, units.SampleRate):
-                rate  = units.SampleRate(rate)
             valid_range = self._board.bsi.external_clock_frequency_ranges(self._source)
             if valid_range.min < rate < valid_range.max:
                 self._external_rate = rate
@@ -239,19 +254,26 @@ class AlazarSampleClock(digitizer.SampleClock):
                                  f"Max: {valid_range.max}")
 
     @property
-    def rate_options(self) -> set[units.SampleRate] | units.FrequencyRange:
+    def rate_options(self) -> set[units.SampleRate] | units.SampleRateRange:
+        if self._source is None:
+            raise RuntimeError("`source` must be set before attempting to set `rate`")
+        
         if self._source == Ats.ClockSources.INTERNAL_CLOCK:
             return {units.SampleRate(option.to_hertz) for option in self._board.bsi.sample_rates}
         
         elif "external" in str(self._source).lower():
-            return units.FrequencyRange(
-                **self._board.bsi.external_clock_frequency_ranges(self._source)
-            ) # TODO, haven't tested this conversion
+            valid_range = self._board.bsi.external_clock_frequency_ranges(self._source)
+            
+            return units.SampleRateRange(min=valid_range.min, max=valid_range.max)
+        
+        else:
+            raise RuntimeError("Unsupported source")
     
     @property
     def edge(self) -> str:
-        if self._edge:
-            return str(self._edge)
+        if self._edge is None:
+            raise RuntimeError("Edge not initialized")
+        return str(self._edge)
     
     @edge.setter
     def edge(self, edge: str):
@@ -293,22 +315,24 @@ class AlazarTrigger(digitizer.Trigger):
         or external trigger specifications.
     """
 
-    def __init__(self, board: AlazarBoard, channels: list[AlazarChannel]):
+    def __init__(self, board: AlazarBoard, channels: tuple[AlazarChannel, ...]):
         self._board = board
         self._channels = channels
 
         # Set parameters to None to signify that they have not been initialized
-        self._source: Ats.TriggerSources = None
-        self._slope: Ats.TriggerSlopes = None
-        self._external_coupling: Ats.Couplings = None
-        self._external_range: Ats.ExternalTriggerRanges = None
-        self._level: int = None # level is an 8-bit value in ATSApi
+        self._source: Optional[Ats.TriggerSources] = None
+        self._slope: Optional[Ats.TriggerSlopes] = None
+        self._external_coupling: Optional[Ats.Couplings] = None
+        self._external_range: Optional[Ats.ExternalTriggerRanges] = None
+        self._level: Optional[int] = None # level is an 8-bit value in ATSApi
 
     @property
     def source(self) -> str:
-        if self._source and str(self._source) in self.source_options:
-            # If _source (an enum) exists and if it is currently a valid source option
-            return str(self._source)
+        if self._source is None:
+            raise RuntimeError("Source not initialized")
+        # if self._source and str(self._source) in self.source_options:
+        #     # If _source (an enum) exists and if it is currently a valid source option
+        return str(self._source)
     
     @source.setter
     def source(self, source: str):
@@ -336,8 +360,9 @@ class AlazarTrigger(digitizer.Trigger):
 
     @property
     def slope(self) -> str:
-        if self._slope:
-            return str(self._slope)
+        if self._slope is None:
+            raise RuntimeError("Slope not initialized")
+        return str(self._slope)
     
     @slope.setter
     def slope(self, slope: str):
@@ -352,21 +377,31 @@ class AlazarTrigger(digitizer.Trigger):
 
     @property
     def level(self) -> units.Voltage:
-        #TODO switch for external trigger?
-        if self.source and self._level:
-            trig_source_range = self._channels[self._source.channel_index]._range.to_volts
-            return units.Voltage((self._level - 128) * trig_source_range / 127)
+        if self._source is None:
+            raise RuntimeError("Source not initialized")
+        if self._level is None:
+            raise RuntimeError("Trigger level not initialized")
+        trigger_channel = self._channels[self._source.channel_index]
+        if trigger_channel._range is None:
+            raise RuntimeError("Trigger channel not initialized")
+        trig_source_range = trigger_channel._range.to_volts
+        return units.Voltage((self._level - 128) * trig_source_range / 127)
         
     @level.setter
     def level(self, level: units.Voltage):
-        if not self._source:
+        if self._source is None:
             raise RuntimeError("Trigger source must be set before trigger level")
         if self._source == Ats.TriggerSources.TRIG_DISABLE:
             raise RuntimeError("Cannot set trigger level. Trigger is disabled")
         if self._source == Ats.TriggerSources.TRIG_EXTERNAL:
+            if self._external_range is None:
+                raise RuntimeError("External range not initialized")
             trigger_source_range = self._external_range.to_volts 
         else:
-            trigger_source_range = self._channels[self._source.channel_index]._range.to_volts
+            trigger_channel = self._channels[self._source.channel_index]
+            if trigger_channel._range is None:
+                raise RuntimeError("External range not set")
+            trigger_source_range = trigger_channel._range.to_volts
         if abs(level) > trigger_source_range:
             raise ValueError(f"Trigger level, {level} is outside the current trigger source range")
 
@@ -375,8 +410,8 @@ class AlazarTrigger(digitizer.Trigger):
 
     @property
     def level_limits(self) -> units.VoltageRange:
-        if not self.source:
-            return None
+        if self._source is None:
+            raise RuntimeError("Source not initialized")
         
         trigger_channel_sources = {
             Ats.TriggerSources.from_str(f"Channel {chr(i + ord('A'))}") 
@@ -384,10 +419,14 @@ class AlazarTrigger(digitizer.Trigger):
         }
         
         if self._source == Ats.TriggerSources.TRIG_EXTERNAL:
+            if self._external_range is None:
+                raise RuntimeError("External trigger range not initialized")
             trigger_source_range = self._external_range.to_volts # TODO need to allow for offset range like TTL
 
         elif self._source in trigger_channel_sources: 
             source_channel = self._channels[self._source.channel_index]
+            if source_channel._range is None:
+                raise RuntimeError("Tirgger source channel range not initialized")
             trigger_source_range = source_channel._range.to_volts
 
         return units.VoltageRange(
@@ -429,7 +468,7 @@ class AlazarTrigger(digitizer.Trigger):
     @property
     def external_range_options(self) -> set[str]:
         options = self._board.bsi.external_trigger_ranges
-        return [str(s) for s in options]
+        return {str(s) for s in options}
         
     def _set_trigger_operation(self):
         """
@@ -479,7 +518,7 @@ def fix_alazar_inplace(buf: np.ndarray, right_shift: int):
                 v = uint16(base[c] ^ 0x8000)        # remove offset
 
                 #if right_shift:                    # native-depth scaling
-                v = uint16((int16(v) >> right_shift) & 0xFFFF)
+                v = uint16((int16(v) >> right_shift) & 0xFFFF) # type: ignore
 
                 base[c] = v                        # write back *uint16*
 
@@ -508,7 +547,7 @@ class AlazarAcquire(digitizer.Acquire):
     """
 
     def __init__(self, board: AlazarBoard, sample_clock: AlazarSampleClock,
-                 channels: list[AlazarChannel]):
+                 channels: tuple[AlazarChannel, ...]):
         self._board = board
         self._sample_clock = sample_clock
         self._channels = channels
@@ -516,19 +555,21 @@ class AlazarAcquire(digitizer.Acquire):
         # Set some defaults
         self._pre_trigger_samples: int = 0
 
-        self._trigger_delay: int = None # in number samples
-        self._record_length: int = None
-        self._records_per_buffer: int = None
-        self._buffers_per_acquisition: int | float = None
+        self._trigger_delay: Optional[int] = None # in samples
+        self._record_length: Optional[int] = None
+        self._records_per_buffer: Optional[int] = None
+        self._buffers_per_acquisition: Optional[int] = None # uses -1 to code for unlimited
 
         self._adma_mode: Ats.ADMAModes = Ats.ADMAModes.ADMA_TRADITIONAL_MODE # TODO allow setting NPT mode
         self._timestamps_enabled: bool = False
 
-        self._buffers_allocated: int = None
-        self._buffers: list[Buffer] = None
+        self._buffers_allocated: Optional[int] = None
+        self._buffers: Optional[list[Buffer]] = None
 
     @property
     def trigger_delay_samples(self) -> int:
+        if self._trigger_delay is None:
+            raise RuntimeError("Trigger delay not initialized")
         return self._trigger_delay
 
     @trigger_delay_samples.setter
@@ -547,6 +588,8 @@ class AlazarAcquire(digitizer.Acquire):
 
     @property
     def trigger_delay_duration(self) -> units.Time:
+        if self._trigger_delay is None:
+            raise RuntimeError("Trigger delay not initialized")
         return units.Time(self._trigger_delay / self._sample_clock.rate)
 
     @property
@@ -577,6 +620,8 @@ class AlazarAcquire(digitizer.Acquire):
 
     @property
     def record_length(self) -> int:
+        if self._record_length is None:
+            raise RuntimeError("Record length not initialized")
         return self._record_length
 
     @record_length.setter
@@ -593,6 +638,8 @@ class AlazarAcquire(digitizer.Acquire):
 
     @property
     def record_duration(self) -> units.Time:
+        if self._record_length is None:
+            raise RuntimeError("Record length not initialized")
         return units.Time(self._record_length / self._sample_clock.rate)
 
     @property
@@ -605,6 +652,8 @@ class AlazarAcquire(digitizer.Acquire):
     
     @property
     def records_per_buffer(self) -> int:
+        if self._records_per_buffer is None:
+            raise RuntimeError("Records per buffer not initialized")
         return self._records_per_buffer
     
     @records_per_buffer.setter
@@ -616,20 +665,26 @@ class AlazarAcquire(digitizer.Acquire):
 
     @property
     def buffers_per_acquisition(self) -> int:
+        if self._buffers_per_acquisition is None:
+            raise RuntimeError("Buffers per acquisitions not initialized")
         return self._buffers_per_acquisition
     
     @buffers_per_acquisition.setter
-    def buffers_per_acquisition(self, buffers: int | float):
-        if isinstance(buffers, float) and not buffers == float('inf'):
-            raise ValueError("`buffers_per_acquisition` can not be non-infinite float.")
-        if buffers < 1:
-            raise ValueError(f"Attempted to set buffers per acquisition {buffers}, "
-                             f"must be ≥ 1")
+    def buffers_per_acquisition(self, buffers: int):
+        if buffers == -1:
+            # -1 codes for unlimited buffers per acquisition
+            pass
+        else:
+            if buffers < 1:
+                raise ValueError(f"Attempted to set buffers per acquisition "
+                                f"{buffers}, must be ≥ 1")
 
         self._buffers_per_acquisition = buffers
 
     @property
     def buffers_allocated(self) -> int:
+        if self._buffers_allocated is None:
+            raise RuntimeError("Buffers allocated not initialized")
         return self._buffers_allocated
 
     @buffers_allocated.setter
@@ -717,6 +772,8 @@ class AlazarAcquire(digitizer.Acquire):
 
     def get_next_completed_buffer(self, acq_buf: AcquisitionProduct): 
         """Retrieve the next available buffer"""
+        if self._buffers is None:
+            raise RuntimeError("Buffers not initialized")
         t = []
         # Determine the index of the buffer, retrieve reference
         t.append(time.perf_counter())
@@ -734,7 +791,7 @@ class AlazarAcquire(digitizer.Acquire):
         # ATS API returns offset unsigned 16 bit data, fully scaled to 16 bits 
         # regardless of the digitizer bit depth. Fix this before passing along.
         fix_alazar_inplace(acq_buf.data, 16 - self._bit_depth)
-        acq_buf.data.dtype = np.int16
+        acq_buf.data.dtype = np.int16 # type: ignore
         t.append(time.perf_counter())
 
         # Retrieve timestamps
@@ -820,14 +877,14 @@ class AlazarAuxillaryIO(digitizer.AuxillaryIO):
 
     def __init__(self, board: AlazarBoard):
         self._board = board
-        self._mode: Ats.AuxIOModes = None
+        self._mode: Optional[Ats.AuxIOModes] = None
 
     def configure_mode(self, mode: Ats.AuxIOModes, **kwargs):
         if mode == Ats.AuxIOModes.AUX_OUT_TRIGGER:
             self._board.configure_aux_io(mode, 0)
 
         elif mode == Ats.AuxIOModes.AUX_OUT_PACER:
-            divider = int(kwargs.get('divider'))
+            divider = int(kwargs["divider"])
             self._board.configure_aux_io(mode, divider)
 
         elif mode == Ats.AuxIOModes.AUX_OUT_SERIAL_DATA:
@@ -835,7 +892,7 @@ class AlazarAuxillaryIO(digitizer.AuxillaryIO):
             self._board.configure_aux_io(mode, state)
 
         elif mode == Ats.AuxIOModes.AUX_IN_TRIGGER_ENABLE:
-            slope:Ats.TriggerSlopes = kwargs.get('slope')
+            slope = Ats.TriggerSlopes.from_str(kwargs["slope"])
             self._board.configure_aux_io(mode, slope)
 
         elif mode == Ats.AuxIOModes.AUX_IN_AUXILIARY:
@@ -852,7 +909,7 @@ class AlazarAuxillaryIO(digitizer.AuxillaryIO):
             return self._board.get_parameter(
                 Ats.Channels.CHANNEL_ALL, 
                 Ats.Parameters.GET_AUX_INPUT_LEVEL
-            )
+            ) is True
         else:
             raise RuntimeError("Auxillary IO not configured as input.")
         
@@ -898,9 +955,11 @@ class AlazarDigitizer(digitizer.Digitizer):
 
         self._board = AlazarBoard(system_id, board_id)
 
-        self.channels: list[AlazarChannel] = []
+        chan_list = []
         for i in range(self._board.bsi.channels):
-            self.channels.append(AlazarChannel(self._board, i))
+            chan_list.append(AlazarChannel(self._board, i))
+
+        self.channels: tuple[AlazarChannel, ...] = tuple(chan_list)
 
         self.sample_clock: AlazarSampleClock = AlazarSampleClock(self._board)
 

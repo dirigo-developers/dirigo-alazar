@@ -1,5 +1,6 @@
 import time
 
+from dirigo import units
 from dirigo_alazar import AlazarDigitizer
 
 
@@ -9,20 +10,20 @@ digitizer = AlazarDigitizer()
 for i, channel in enumerate(digitizer.channels):
     channel.coupling = "DC"
     channel.impedance = "50 Ω"
-    channel.range = "±2 V"
+    channel.range = units.VoltageRange("±2 V")
     channel.enabled = i < 2
 
 # Horizontal
 digitizer.sample_clock.edge = "Rising"
 digitizer.sample_clock.source = "Internal Clock"
-digitizer.sample_clock.rate = "10 MS/s"
+digitizer.sample_clock.rate = units.SampleRate("10 MS/s")
 
 # Trigger
 digitizer.trigger.external_coupling = "DC"
 digitizer.trigger.external_range = "TTL"
 digitizer.trigger.source = "External"
 digitizer.trigger.slope = "Positive"
-digitizer.trigger.level = 0
+digitizer.trigger.level = units.Voltage(0)
 
 # Acquire
 digitizer.acquire.trigger_delay_samples = 100
