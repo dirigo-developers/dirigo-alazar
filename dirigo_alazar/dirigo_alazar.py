@@ -25,7 +25,7 @@ Classes:
     AlazarSampleClock: Configures the sample clock for acquisition.
     AlazarTrigger: Manages trigger settings and operations.
     AlazarAcquire: Handles acquisition logic and data transfer.
-    AlazarAuxillaryIO: Configures auxiliary input/output operations.
+    AlazarAuxiliaryIO: Configures auxiliary input/output operations.
     AlazarDigitizer: Combines the above components into a digitizer interface.
 """
 
@@ -741,11 +741,11 @@ class AlazarAcquire(digitizer.Acquire):
         # Allocate buffers
         if self.timestamps_enabled:
             if self._adma_mode == Ats.ADMAModes.ADMA_TRADITIONAL_MODE:
-                headers = True
-                footers = False
+                headers, footers = True, False
             elif self._adma_mode == Ats.ADMAModes.ADMA_NPT:
-                headers = False
-                footers = True
+                headers, footers = False, True
+        else:
+            headers, footers = False, False
         self._buffers = []
         for _ in range(self.buffers_allocated): 
             buffer = Buffer(
@@ -867,7 +867,7 @@ class AlazarAcquire(digitizer.Acquire):
             return True
 
 
-class AlazarAuxillaryIO(digitizer.AuxillaryIO):
+class AlazarAuxiliaryIO(digitizer.AuxiliaryIO):
     """
     Configures auxiliary input/output (IO) operations for an Alazar Tech digitizer.
 
@@ -879,28 +879,42 @@ class AlazarAuxillaryIO(digitizer.AuxillaryIO):
         self._board = board
         self._mode: Optional[Ats.AuxIOModes] = None
 
-    def configure_mode(self, mode: Ats.AuxIOModes, **kwargs):
-        if mode == Ats.AuxIOModes.AUX_OUT_TRIGGER:
-            self._board.configure_aux_io(mode, 0)
+    def configure_mode(self, mode: digitizer.AuxiliaryIOEnums, **kwargs):
+        if mode == digitizer.AuxiliaryIOEnums.OutTrigger:
+            self._board.configure_aux_io(
+                mode        = Ats.AuxIOModes.AUX_OUT_TRIGGER, 
+                parameter   = 0 # have to provide, but not used
+            )
 
-        elif mode == Ats.AuxIOModes.AUX_OUT_PACER:
+        elif mode == digitizer.AuxiliaryIOEnums.OutPacer:
             divider = int(kwargs["divider"])
-            self._board.configure_aux_io(mode, divider)
+            self._board.configure_aux_io(
+                mode        = Ats.AuxIOModes.AUX_OUT_PACER, 
+                parameter   = divider
+            )
 
-        elif mode == Ats.AuxIOModes.AUX_OUT_SERIAL_DATA:
+        elif mode == digitizer.AuxiliaryIOEnums.OutDigital:
             state = bool(kwargs.get('state'))
-            self._board.configure_aux_io(mode, state)
+            self._board.configure_aux_io(
+                mode        = Ats.AuxIOModes.AUX_OUT_SERIAL_DATA, 
+                parameter   = state
+            )
 
-        elif mode == Ats.AuxIOModes.AUX_IN_TRIGGER_ENABLE:
+        elif mode == digitizer.AuxiliaryIOEnums.InTriggerEnable:
             slope = Ats.TriggerSlopes.from_str(kwargs["slope"])
-            self._board.configure_aux_io(mode, slope)
+            self._board.configure_aux_io(
+                mode        = Ats.AuxIOModes.AUX_IN_TRIGGER_ENABLE, 
+                parameter   = slope
+            )
 
-        elif mode == Ats.AuxIOModes.AUX_IN_AUXILIARY:
-            self._board.configure_aux_io(mode, 0)
-            # Note, read requires a call to board.get_parameter()
+        elif mode == digitizer.AuxiliaryIOEnums.InDigital:
+            self._board.configure_aux_io(
+                mode        = Ats.AuxIOModes.AUX_IN_AUXILIARY, 
+                parameter   = 0
+            )
 
         else:
-            raise ValueError(f"Unsupported auxillary IO mode: {mode}")
+            raise ValueError(f"Unsupported auxiliary IO mode: {mode}")
         
     # TODO provide supported modes?
         
@@ -911,7 +925,7 @@ class AlazarAuxillaryIO(digitizer.AuxillaryIO):
                 Ats.Parameters.GET_AUX_INPUT_LEVEL
             ) is True
         else:
-            raise RuntimeError("Auxillary IO not configured as input.")
+            raise RuntimeError("Auxiliary IO not configured as input.")
         
     def write_output(self, state: bool):
         self.configure_mode(Ats.AuxIOModes.AUX_OUT_SERIAL_DATA, state=state)
@@ -934,7 +948,7 @@ class AlazarDigitizer(digitizer.Digitizer):
         sample_clock (AlazarSampleClock): Sample clock configuration.
         trigger (AlazarTrigger): Trigger configuration.
         acquire (AlazarAcquire): Acquisition settings and logic.
-        aux_io (AlazarAuxillaryIO): Auxiliary input/output configuration.
+        aux_io (AlazarAuxiliaryIO): Auxiliary input/output configuration.
 
     Note:
         Ensure the digitizer hardware is correctly connected and initialized
@@ -967,7 +981,7 @@ class AlazarDigitizer(digitizer.Digitizer):
 
         self.acquire: AlazarAcquire = AlazarAcquire(self._board, self.sample_clock, self.channels)
         
-        self.aux_io: AlazarAuxillaryIO = AlazarAuxillaryIO(self._board)
+        self.aux_io: AlazarAuxiliaryIO = AlazarAuxiliaryIO(self._board)
 
     @property
     def bit_depth(self) -> int: 
