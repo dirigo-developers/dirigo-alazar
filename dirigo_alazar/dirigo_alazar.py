@@ -853,38 +853,27 @@ class AlazarAcquire(digitizer.Acquire):
         """Retrieve the next available buffer"""
         if self._buffers is None:
             raise RuntimeError("Buffers not initialized")
-        t = []
         # Determine the index of the buffer, retrieve reference
-        t.append(time.perf_counter())
         buffer_index = self._buffers_acquired % self.buffers_allocated
         buffer = self._buffers[buffer_index]
-        t.append(time.perf_counter())
 
         # Wait for the buffer to complete and copy data when ready--want this to be long
         self._board.wait_async_buffer_complete(buffer.address)
-        t.append(time.perf_counter())
 
         buffer.get_data(acq_buf.data)
-        t.append(time.perf_counter())
 
         # ATS API returns offset unsigned 16 bit data, fully scaled to 16 bits 
         # regardless of the digitizer bit depth. Fix this before passing along.
         fix_alazar_inplace(acq_buf.data, 16 - self._bit_depth)
         acq_buf.data.dtype = np.int16 # type: ignore
-        t.append(time.perf_counter())
 
         # Retrieve timestamps
         acq_buf.timestamps = self._sec_per_tic * np.array(buffer.get_timestamps())
         self._buffers_acquired += 1
-        t.append(time.perf_counter())
 
         # Repost buffer
         self._board.post_async_buffer(buffer.address, buffer.size)
-        t.append(time.perf_counter())
 
-        #dt = np.diff(t)*1000
-        #print(f"INDEX: {dt[0]:.3f} | WAIT: {dt[1]:.3f} | GET DATA: {dt[2]:.3f} | FIX BITS: {dt[3]:.3f} | TSTAMPS: {dt[4]:.3f} | REPOST: {dt[5]:.3f}")
-        
     def stop(self):
         self._board.abort_async_read()
 
