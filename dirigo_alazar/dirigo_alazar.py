@@ -1,6 +1,5 @@
 from functools import cached_property
 from typing import Optional
-import time
 
 import numpy as np
 from numba import njit, prange, int16, uint16, types
@@ -193,7 +192,7 @@ class AlazarSampleClock(digitizer.SampleClock):
         self._source = source
 
     @property
-    def source_options(self) -> set[str]:
+    def source_options(self) -> set[digitizer.SampleClockSource]:
         options = []
         for ats_source in [str(s).lower() for s in self._board.bsi.supported_clocks]:
             if "internal" in ats_source:
@@ -279,7 +278,7 @@ class AlazarSampleClock(digitizer.SampleClock):
         self._set_capture_clock()
 
     @property
-    def edge_options(self) -> set[str]:
+    def edge_options(self) -> set[digitizer.SampleClockEdge]:
         # ALl non-DES boards support rising/falling edge sampling
         options = [digitizer.SampleClockEdge.RISING, 
                    digitizer.SampleClockEdge.FALLING]
@@ -578,7 +577,6 @@ class AlazarTrigger(digitizer.Trigger):
             )
 
 
-# explicit signature → earlier compilation & no object mode fallback
 sig = (types.uint16[:, :, :],  # buf  (uint16, C-contiguous)
        types.int64)            # right_shift
 @njit(sig, parallel=True, fastmath=True, nogil=True, cache=True)
@@ -678,11 +676,11 @@ class AlazarAcquire(digitizer.Acquire):
 
     # TODO, combine the next three with trigger_delay
     @property
-    def pre_trigger_samples(self):
+    def pre_trigger_samples(self) -> int:
         return self._pre_trigger_samples
     
     @pre_trigger_samples.setter
-    def pre_trigger_samples(self, samples:int):
+    def pre_trigger_samples(self, samples: int):
         if samples < 0:
             raise ValueError(f"Attempted to set pre-trigger samples {samples} "
                              f"must be ≥ 0")
@@ -694,7 +692,7 @@ class AlazarAcquire(digitizer.Acquire):
         self._set_record_size()
 
     @property
-    def pre_trigger_resolution(self):
+    def pre_trigger_resolution(self) -> int:
         return self._board.bsi.pretrig_alignment
 
     @property
@@ -878,7 +876,7 @@ class AlazarAcquire(digitizer.Acquire):
         self._board.abort_async_read()
 
     @property
-    def adma_mode(self) -> str:
+    def adma_mode(self) -> str: # TODO, should we use Alazar-specific enumeration here?
         """Alazar-specific: returns current ADMA mode"""
         return str(self._adma_mode)
 
@@ -948,6 +946,14 @@ class AlazarAuxiliaryIO(digitizer.AuxiliaryIO):
         self._mode: Optional[Ats.AuxIOModes] = None
 
     def configure_mode(self, mode: digitizer.AuxiliaryIOEnums, **kwargs):
+        """
+        Usage:
+        for mode AuxiliaryIOEnums.OutTrigger, no keyword arg required,
+        for mode AuxiliaryIOEnums.OutPacer, provide 'divider' keyword arg (int),
+        for mode AuxiliaryIOEnums.OutDigital, provide 'state' keyword arg (bool),
+        for mode AuxiliaryIOEnums.InTriggerEnable, provide 'slope' keyword arg (digitizer.TriggerSlope),
+        for mode AuxiliaryIOEnums.InDigital, no keyword arg required.
+        """
         if mode == digitizer.AuxiliaryIOEnums.OutTrigger:
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_OUT_TRIGGER, 
@@ -969,10 +975,16 @@ class AlazarAuxiliaryIO(digitizer.AuxiliaryIO):
             )
 
         elif mode == digitizer.AuxiliaryIOEnums.InTriggerEnable:
-            slope = Ats.TriggerSlopes.from_str(kwargs["slope"])
+            slope = kwargs["slope"]
+            if slope == digitizer.TriggerSlope.RISING:
+                ats_slope = Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE
+            elif slope == digitizer.TriggerSlope.FALLING:
+                ats_slope = Ats.TriggerSlopes.TRIGGER_SLOPE_NEGATIVE
+            else:
+                raise ValueError(f"Unspported trigger slope: {slope}")
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_IN_TRIGGER_ENABLE, 
-                parameter   = slope
+                parameter   = ats_slope
             )
 
         elif mode == digitizer.AuxiliaryIOEnums.InDigital:
@@ -1061,5 +1073,4 @@ class AlazarDigitizer(digitizer.Digitizer):
             min=-2**(self.bit_depth-1),
             max=2**(self.bit_depth-1) - 1 
         )
-
 
