@@ -2,7 +2,7 @@ from functools import cached_property
 from typing import Optional
 
 import numpy as np
-from numba import njit, prange, int16, uint16, types
+from numba import njit, prange, uint8, int8, int16, uint16, int64
 
 from atsbindings import Ats, System, Buffer
 from atsbindings import Board as AlazarBoard
@@ -538,7 +538,7 @@ class AlazarTrigger(digitizer.Trigger):
                     trigger_source_range = self._external_range 
             else:
                 raise NotImplementedError("Haven't completed trigger level for input channels")
-            int_lvl = int(128 + 127 * (self._level-trigger_source_range.min) / trigger_source_range.range)
+            int_lvl = int(128 + 127 * (self._level / trigger_source_range.range))
             
             self._board.set_trigger_operation(
                 operation=Ats.TriggerOperations.TRIG_ENGINE_OP_J,
@@ -577,27 +577,52 @@ class AlazarTrigger(digitizer.Trigger):
             )
 
 
-sig = (types.uint16[:, :, :],  # buf  (uint16, C-contiguous)
-       types.int64)            # right_shift
-@njit(sig, parallel=True, fastmath=True, nogil=True, cache=True)
-def fix_alazar_inplace(buf: np.ndarray, right_shift: int):
+@njit((uint8[:,:,:], int64), parallel=True, fastmath=True, nogil=True, cache=True)
+def fix_alazar_inplace_8(buf: np.ndarray, right_shift: int):
+    """
+    In-place: offset-binary uint8  →  twos-complement uint8 pattern.
+
+    After the call, do   signed = buf.view(np.int8)   (zero-copy).
+    """
+    nr, ns, nc = buf.shape
+    rs = right_shift
+    if rs < 0:
+        rs = 0
+    elif rs > 7:
+        rs = 7
+
+    for r in prange(nr):
+        for s in range(ns):
+            base = buf[r, s]
+            for c in range(nc):
+                v = base[c] ^ 0x80              # remove offset
+                if rs != 0:
+                    v = uint8(int8(v) >> rs)    # arithmetic shift then back to unsigned
+                base[c] = v                     # write back uint8
+
+
+@njit((uint16[:,:,:], int64), parallel=True, fastmath=True, nogil=True, cache=True)
+def fix_alazar_inplace_16(buf: np.ndarray, right_shift: int):
     """
     In-place: offset-binary uint16  →  twos-complement uint16 pattern.
 
     After the call, do   signed = buf.view(np.int16)   (zero-copy).
     """
     nr, ns, nc = buf.shape
+    rs = right_shift
+    if rs < 0:
+        rs = 0
+    elif rs > 15:
+        rs = 15
 
     for r in prange(nr):
         for s in range(ns):
             base = buf[r, s]          # 1-D uint16 view of the nc channels
             for c in range(nc):
-                v = uint16(base[c] ^ 0x8000)        # remove offset
-
-                #if right_shift:                    # native-depth scaling
-                v = uint16((int16(v) >> right_shift) & 0xFFFF) # type: ignore
-
-                base[c] = v                        # write back *uint16*
+                v = base[c] ^ 0x8000            # remove offset
+                if rs != 0:
+                    v = uint16(int16(v) >> rs)  # arithmetic shift then back to unsigned
+                base[c] = v                     # write back uint16
 
 
 
@@ -860,10 +885,14 @@ class AlazarAcquire(digitizer.Acquire):
 
         buffer.get_data(acq_buf.data)
 
-        # ATS API returns offset unsigned 16 bit data, fully scaled to 16 bits 
-        # regardless of the digitizer bit depth. Fix this before passing along.
-        fix_alazar_inplace(acq_buf.data, 16 - self._bit_depth)
-        acq_buf.data.dtype = np.int16 # type: ignore
+        # ATS API returns offset unsigned 8 or 16 bit data, fully scaled to 8 or 
+        # 16 bits regardless of the digitizer bit depth. Fix this before passing.
+        if acq_buf.data.dtype == np.uint8:
+            fix_alazar_inplace_8(acq_buf.data, 8 - self._bit_depth)
+            acq_buf.data.dtype = np.int8 # type: ignore
+        else:
+            fix_alazar_inplace_16(acq_buf.data, 16 - self._bit_depth)
+            acq_buf.data.dtype = np.int16 # type: ignore
 
         # Retrieve timestamps
         acq_buf.timestamps = self._sec_per_tic * np.array(buffer.get_timestamps())
