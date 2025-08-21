@@ -1,5 +1,5 @@
 from functools import cached_property
-from typing import Optional, Any
+from typing import Optional
 import time
 
 import numpy as np
@@ -42,91 +42,97 @@ class AlazarChannel(digitizer.Channel):
         range (str): Voltage range for the channel.
         enabled (bool): Indicates whether the channel is active for acquisition.
     """
+    _coupling_mapping = { # Dirigo enums -> ATS enums
+        digitizer.ChannelCoupling.AC:       Ats.Couplings.AC_COUPLING,
+        digitizer.ChannelCoupling.DC:       Ats.Couplings.DC_COUPLING,
+        digitizer.ChannelCoupling.GROUND:   Ats.Couplings.GND_COUPLING,
+    }
+    _impedance_mapping = { # Dirigo units -> ATS enums
+        units.Resistance("1 Mohm"):     Ats.Impedances.IMPEDANCE_1M_OHM,
+        units.Resistance("50 ohm"):     Ats.Impedances.IMPEDANCE_50_OHM,
+        units.Resistance("75 ohm"):     Ats.Impedances.IMPEDANCE_75_OHM,
+        units.Resistance("300 ohm"):    Ats.Impedances.IMPEDANCE_300_OHM,
+        units.Resistance("100 ohm"):    Ats.Impedances.IMPEDANCE_100_OHM,
+    }
+
     def __init__(self, board: AlazarBoard, channel_index: int):
         self._board = board
         self._index = channel_index
 
         # Set parameters to None to indicate they have not been initialized 
         # (though they are set to something on the digitizer)
-        self._coupling: Optional[Ats.Couplings] = None
-        self._impedance: Optional[Ats.Impedances] = None
-        self._range: Optional[Ats.InputRanges] = None
+        self._coupling: digitizer.ChannelCoupling | None = None
+        self._impedance: units.Resistance | None = None
+        self._range: units.VoltageRange | None = None
     
     @property
     def index(self) -> int:
         return self._index
 
     @property
-    def coupling(self) -> str:
+    def coupling(self) -> digitizer.ChannelCoupling:
         if self._coupling is None:
             raise RuntimeError("Coupling not initialized")
-        return str(self._coupling)
+        return self._coupling
     
     @coupling.setter
-    def coupling(self, coupling: str):
-        coupling_enum = Ats.Couplings.from_str(coupling)
-        if coupling_enum not in self._board.bsi.input_couplings:
-            valid = self._board.bsi.input_couplings
-            raise ValueError(f"Invalid input coupling {coupling_enum}"
-                             f"Valid options are: {valid}")
-        self._coupling = coupling_enum
+    def coupling(self, coupling: digitizer.ChannelCoupling):
+        if coupling not in self.coupling_options:
+            raise ValueError(f"Invalid input coupling {coupling}"
+                             f"Valid options are: {self.coupling_options}")
+        self._coupling = coupling
         self._set_input_control()
 
     @property
-    def coupling_options(self) -> set[str]:
-        options = self._board.bsi.input_couplings
-        return {str(s) for s in options}
+    def coupling_options(self) -> set[digitizer.ChannelCoupling]:
+        ats_couplings = self._board.bsi.input_couplings
+        rvs_map = {v: k for k, v in self._coupling_mapping.items()}
+        return {rvs_map[c] for c in ats_couplings}
 
     @property
-    def impedance(self) -> str:
+    def impedance(self) -> units.Resistance:
         if self._impedance is None:
             raise RuntimeError("Impedance not initialized")
-        return str(self._impedance)
+        return self._impedance
     
     @impedance.setter
-    def impedance(self, impedance: str):
-        imp = int(units.Resistance(impedance))
-        impedance_enum = Ats.Impedances.from_ohms(imp)
-        if impedance_enum not in self._board.bsi.input_impedances:
-            valid_options = ', '.join([str(s) for s in self._board.bsi.input_impedances])
-            raise ValueError(f"Invalid input impedance {impedance_enum}. "
-                             f"Valid options are: {valid_options}")
-        self._impedance = impedance_enum
+    def impedance(self, impedance: units.Resistance):
+        if impedance not in self.impedance_options:
+            raise ValueError(f"Invalid input impedance {impedance}. "
+                             f"Valid options are: {self.impedance_options}")
+        self._impedance = impedance
         self._set_input_control()
 
     @property
-    def impedance_options(self) -> set[str]:
-        options = self._board.bsi.input_impedances
-        return {str(s) for s in options}
+    def impedance_options(self) -> set[units.Resistance]:
+        ats_impedances = self._board.bsi.input_impedances
+        rvs_map = {v: k for k, v in self._impedance_mapping.items()}
+        return {rvs_map[i] for i in ats_impedances}
     
     @property
-    def range(self) -> str:
+    def range(self) -> units.VoltageRange:
         if self._range is None:
             raise RuntimeError("Range is not initialized")
-        return str(self._range)
+        return self._range
     
     @range.setter
     def range(self, rng: units.VoltageRange):
-        # (supported) Alazar input ranges are always bipolar
+        # supported Alazar input ranges are always bipolar
         if abs(rng.max) != abs(rng.min):
             raise ValueError("Voltage range must be bipolar: e.g. +/-1V")
-        range_enum = Ats.InputRanges.from_volts(rng.max)
-        if self._impedance is None:
-            raise RuntimeError("Impedance must be initialized before setting range")
-        current_ranges = self._board.bsi.input_ranges(self._impedance) # this takes a ATS Impedance object
-        if range_enum not in current_ranges:
-            valid_options = ', '.join([str(s) for s in current_ranges])
-            raise ValueError(f"Invalid input impedance {range_enum}. "
-                             f"Valid options are: {valid_options}")
-        self._range = range_enum
+        
+        if rng not in self.range_options:
+            raise ValueError(f"Invalid input impedance {rng}. "
+                             f"Valid options are: {self.range_options}")
+        self._range = rng
         self._set_input_control()
     
     @property
-    def range_options(self) -> set[str]:
+    def range_options(self) -> set[units.VoltageRange]:
         if self._impedance is None:
             raise RuntimeError("Impedance must be initialized before accessing range options")
-        options = self._board.bsi.input_ranges(self._impedance)
-        return {str(s) for s in options}
+        ats_ranges = self._board.bsi.input_ranges(self._impedance_mapping[self._impedance])
+        return {units.VoltageRange(-r.to_volts, r.to_volts) for r in ats_ranges}
 
     def _set_input_control(self):
         """Helper method to apply input control settings to the digitizer.
@@ -138,9 +144,9 @@ class AlazarChannel(digitizer.Channel):
         else:
             self._board.input_control_ex(
                 channel=Ats.Channels.from_int(self.index),
-                coupling=self._coupling,
-                input_range=self._range,
-                impedance=self._impedance,
+                coupling=self._coupling_mapping[self._coupling],
+                input_range=Ats.InputRanges.from_volts(self._range.max),
+                impedance=self._impedance_mapping[self._impedance],
             )
 
 
@@ -166,46 +172,35 @@ class AlazarSampleClock(digitizer.SampleClock):
         self._board = board
 
         # Set parameters to None to signify that they have not been initialized
-        self._source: Optional[Ats.ClockSources] = None
-        self._rate: Optional[Ats.SampleRates] = None
-        self._external_rate: Optional[units.SampleRate] = None # Used only with external clock source, otherwise ignored
+        self._source: digitizer.SampleClockSource | None = None
+        self._rate: units.SampleRate | None = None
         
         # Default clock edge, set to rising
-        self._edge: Ats.ClockEdges = Ats.ClockEdges.CLOCK_EDGE_RISING
+        self._edge: digitizer.SampleClockEdge = digitizer.SampleClockEdge.RISING
         
     @property
-    def source(self) -> str:
+    def source(self) -> digitizer.SampleClockSource:
         if self._source is None:
             raise RuntimeError("Source not initialized")
-        return str(self._source)
+        return self._source
     
     @source.setter
-    def source(self, source: str):
-        previous_source_enum = self._source
-        source_enum = Ats.ClockSources.from_str(source)
-
-        # Check if same, if so return immediately
-        if source_enum == previous_source_enum:
-            return 
-        
-        # Check whether new source is supported, if so store in private attr
-        if source_enum not in self._board.bsi.supported_clocks:
-            valid_options = ', '.join([str(s) for s in self._board.bsi.supported_clocks])
-            raise ValueError(f"Invalid sample clock source: {source_enum}. "
-                             f"Valid options are: {valid_options}")
-        self._source = source_enum
-
-        # Reset rate
-        if source_enum == Ats.ClockSources.INTERNAL_CLOCK:
-            self._rate = None
-        elif "external" in str(self._source).lower():
-            self._rate = Ats.SampleRates.SAMPLE_RATE_USER_DEF
-            self._external_rate = None
-        # TODO, other sources?
+    def source(self, source: digitizer.SampleClockSource):
+        if not isinstance(source, digitizer.SampleClockSource):
+            raise ValueError("Sample clock source must be set with a SampleClockSource enumeration.")
+        if source not in self.source_options:
+            raise ValueError(f"{source} (sample clock source) is not available")
+        self._source = source
 
     @property
     def source_options(self) -> set[str]:
-        return {str(s) for s in self._board.bsi.supported_clocks}
+        options = []
+        for ats_source in [str(s).lower() for s in self._board.bsi.supported_clocks]:
+            if "internal" in ats_source:
+                options.append(digitizer.SampleClockSource.INTERNAL)
+            elif "external" in ats_source:
+                options.append(digitizer.SampleClockSource.EXTERNAL)
+        return set(options)
 
     @property
     def rate(self) -> units.SampleRate:
@@ -214,86 +209,113 @@ class AlazarSampleClock(digitizer.SampleClock):
         the user-specified external clock rate.
         """
         if self._source is None:
-            raise RuntimeError("Source must be initialized before accessing rate")
-        if self._source == Ats.ClockSources.INTERNAL_CLOCK:
-            if self._rate is None:
-                raise RuntimeError("External rate not initialized")
-            # convert atswrapper enum into a dirigo.Frequency object
-            return units.SampleRate(self._rate.to_hertz) 
-        elif "external" in str(self._source).lower():
-            if self._external_rate is None:
-                raise RuntimeError("External rate not initialized")
-            return units.SampleRate(self._external_rate)
-        else:
-            raise RuntimeError("Unsupported clock configuration:", str(self._source))
+            raise RuntimeError("`source` must be initialized before accessing rate")
+        if self._rate is None:
+            raise RuntimeError("Sample clock rate is not initialized")
+        return self._rate
     
     @rate.setter
     def rate(self, rate: units.SampleRate):
         if self._source is None:
             raise ValueError("`source` must be set before attempting to set `rate`")
 
-        if self._source == Ats.ClockSources.INTERNAL_CLOCK:
+        if self._source == digitizer.SampleClockSource.INTERNAL:
+            # Check if proposed rate matches an available internal clock rate
             clock_rate_enum = Ats.SampleRates.from_hertz(int(rate))
             if clock_rate_enum not in self._board.bsi.sample_rates:
                 valid_options = ', '.join([str(s) for s in self._board.bsi.sample_rates])
                 raise ValueError(f"Invalid sample clock rate: {clock_rate_enum}. "
-                                f"Valid options are: {valid_options}")
-            self._rate = clock_rate_enum
+                                 f"Valid options are: {valid_options}")
+            self._rate = rate
             self._set_capture_clock()
 
-        elif "external" in str(self._source).lower():
-            # check that the proposed external clock is valid
-            valid_range = self._board.bsi.external_clock_frequency_ranges(self._source)
+        elif self._source == digitizer.SampleClockSource.EXTERNAL:
+            # check that the proposed external clock rate is achievable
+            valid_range = self.rate_options
             if valid_range.min < rate < valid_range.max:
-                self._external_rate = rate
-            else:
-                raise ValueError(f"Tried setting external clock frequency outside "
-                                 f"acceptable range for source: {self._source} "
-                                 f"Requested: {rate}, "
-                                 f"Min: {valid_range.min}"
-                                 f"Max: {valid_range.max}")
+                self._rate = rate
+                return
+
+            raise ValueError(f"Proposed externally clocked sample rate: {rate} " 
+                             f"is not within any external clock range: "
+                             f"min: {valid_range.min}, max: {valid_range.max}")
+            
+        else:
+            raise RuntimeError(f"Invalid sample clock source: {self._source}")
 
     @property
     def rate_options(self) -> set[units.SampleRate] | units.SampleRateRange:
         if self._source is None:
             raise RuntimeError("`source` must be set before attempting to set `rate`")
         
-        if self._source == Ats.ClockSources.INTERNAL_CLOCK:
+        if self._source == digitizer.SampleClockSource.INTERNAL:
             return {units.SampleRate(option.to_hertz) for option in self._board.bsi.sample_rates}
         
-        elif "external" in str(self._source).lower():
-            valid_range = self._board.bsi.external_clock_frequency_ranges(self._source)
-            
-            return units.SampleRateRange(min=valid_range.min, max=valid_range.max)
+        if self._source == digitizer.SampleClockSource.EXTERNAL:
+            min_rate, max_rate = float('inf'), -float('inf')
+            for ats_clock in self._board.bsi.supported_clocks:
+                if ats_clock == Ats.ClockSources.INTERNAL_CLOCK: continue
+
+                valid_range = self._board.bsi.external_clock_frequency_ranges(ats_clock)
+                min_rate = min(min_rate, valid_range.min)
+                max_rate = max(max_rate, valid_range.max)
+                            
+            return units.SampleRateRange(min=min_rate, max=max_rate)
         
         else:
-            raise RuntimeError("Unsupported source")
+            raise RuntimeError(f"Unsupported source: {self._source}")
     
     @property
-    def edge(self) -> str:
-        if self._edge is None:
-            raise RuntimeError("Edge not initialized")
-        return str(self._edge)
+    def edge(self) -> digitizer.SampleClockEdge:
+        # has a default so no need to check for None
+        return self._edge
     
     @edge.setter
-    def edge(self, edge: str):
-        clock_edge_enum = Ats.ClockEdges.from_str(edge)
-        self._edge = clock_edge_enum
+    def edge(self, edge: digitizer.SampleClockEdge):
+        if edge not in self.edge_options:
+            raise ValueError(f"Proposed clock edge: {edge} not an available "
+                             f"option {self.edge_options}")
+        self._edge = edge
         self._set_capture_clock()
 
     @property
     def edge_options(self) -> set[str]:
-        options = [Ats.ClockEdges.CLOCK_EDGE_RISING, # ALl non-DES boards support rising/falling edge sampling
-                   Ats.ClockEdges.CLOCK_EDGE_FALLING]
+        # ALl non-DES boards support rising/falling edge sampling
+        options = [digitizer.SampleClockEdge.RISING, 
+                   digitizer.SampleClockEdge.FALLING]
         return {str(s) for s in options}
 
     def _set_capture_clock(self):
         """
         Helper to set capture clock if all required parameters have been set:
-        source, rate, and edge
+        source, rate, and edge (has a default).
         """
-        if self._source and self._rate and self._edge:
-            self._board.set_capture_clock(self._source, self._rate, self._edge)
+        if (self._source is not None) and (self._rate is not None):
+            if self._source == digitizer.SampleClockSource.INTERNAL:
+                ats_source = Ats.ClockSources.INTERNAL_CLOCK
+                ats_rate = Ats.SampleRates.from_hertz(int(self._rate))
+
+            elif self._source == digitizer.SampleClockSource.EXTERNAL:
+                for ats_clock in self._board.bsi.supported_clocks:
+                    if ats_clock == Ats.ClockSources.INTERNAL_CLOCK: 
+                        continue
+                    valid_range = self._board.bsi.external_clock_frequency_ranges(ats_clock)
+                    if valid_range.min <= self._rate <= valid_range.max:
+                        ats_source = ats_clock
+                        break
+                ats_rate = Ats.SampleRates.SAMPLE_RATE_USER_DEF
+            
+            else:
+                raise RuntimeError(f"Unsupported source: {self._source}")
+            
+            if self._edge == digitizer.SampleClockEdge.RISING:
+                ats_edge = Ats.ClockEdges.CLOCK_EDGE_RISING
+            elif self._edge == digitizer.SampleClockEdge.FALLING:
+                ats_edge = Ats.ClockEdges.CLOCK_EDGE_FALLING
+            else:
+                raise RuntimeError(f"Unsupported edge: {self._edge}")
+
+            self._board.set_capture_clock(ats_source, ats_rate, ats_edge)
 
 
 class AlazarTrigger(digitizer.Trigger):
@@ -314,66 +336,78 @@ class AlazarTrigger(digitizer.Trigger):
         Trigger source and settings must be compatible with the enabled channels
         or external trigger specifications.
     """
+    _trigger_source_mapping = {
+        digitizer.TriggerSource.INTERNAL:   Ats.TriggerSources.TRIG_DISABLE, # Not sure about this
+        digitizer.TriggerSource.EXTERNAL:   Ats.TriggerSources.TRIG_EXTERNAL,
+        digitizer.TriggerSource.CHANNEL_A:  Ats.TriggerSources.TRIG_CHAN_A,
+        digitizer.TriggerSource.CHANNEL_B:  Ats.TriggerSources.TRIG_CHAN_B,
+        digitizer.TriggerSource.CHANNEL_C:  Ats.TriggerSources.TRIG_CHAN_C,
+        digitizer.TriggerSource.CHANNEL_D:  Ats.TriggerSources.TRIG_CHAN_D,
+    }
+    _trigger_slope_mapping = {
+        digitizer.TriggerSlope.RISING:  Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE,
+        digitizer.TriggerSlope.FALLING: Ats.TriggerSlopes.TRIGGER_SLOPE_NEGATIVE,
+    }
+    _external_coupling_map = {
+        digitizer.ExternalTriggerCoupling.AC:   Ats.Couplings.AC_COUPLING,
+        digitizer.ExternalTriggerCoupling.DC:   Ats.Couplings.DC_COUPLING
+    }
 
     def __init__(self, board: AlazarBoard, channels: tuple[AlazarChannel, ...]):
         self._board = board
         self._channels = channels
 
         # Set parameters to None to signify that they have not been initialized
-        self._source: Optional[Ats.TriggerSources] = None
-        self._slope: Optional[Ats.TriggerSlopes] = None
-        self._external_coupling: Optional[Ats.Couplings] = None
-        self._external_range: Optional[Ats.ExternalTriggerRanges] = None
-        self._level: Optional[int] = None # level is an 8-bit value in ATSApi
+        self._source: digitizer.TriggerSource | None = None
+        self._slope: digitizer.TriggerSlope | None = None
+        self._external_coupling: digitizer.ExternalTriggerCoupling | None = None
+        self._external_range: units.VoltageRange | digitizer.ExternalTriggerRange | None = None
+        self._level: units.Voltage = units.Voltage("0 V") # level is an 8-bit value in ATSApi
 
     @property
-    def source(self) -> str:
+    def source(self) -> digitizer.TriggerSource:
         if self._source is None:
             raise RuntimeError("Source not initialized")
-        # if self._source and str(self._source) in self.source_options:
-        #     # If _source (an enum) exists and if it is currently a valid source option
-        return str(self._source)
+        return self._source
     
     @source.setter
-    def source(self, source: str):
-        source_enum = Ats.TriggerSources.from_str(source)
-        trig_srcs = self._board.bsi.supported_trigger_sources
-        if source_enum not in trig_srcs:
-            valid_options = ', '.join([str(s) for s in trig_srcs])
-            raise ValueError(f"Invalid trigger source: {source_enum}. "
-                             f"Valid options are: {valid_options}")
-        self._source = source_enum
+    def source(self, source: digitizer.TriggerSource):
+        if source not in self.source_options:
+            raise ValueError(f"Invalid trigger source: {source}. "
+                             f"Valid options are: {self.source_options}")
+        self._source = source
         self._set_trigger_operation()
 
     @property
-    def source_options(self) -> set[str]:
-        all_options = self._board.bsi.supported_trigger_sources
+    def source_options(self) -> set[digitizer.TriggerSource]:
+        ats_trig_sources = self._board.bsi.supported_trigger_sources
 
         # remove channels that are not currently enabled
         for channel in self._channels:
             if not channel.enabled:
                 s = f"channel {chr(channel.index + ord('A'))}"
-                all_options.remove(Ats.TriggerSources.from_str(s))
+                ats_trig_sources.remove(Ats.TriggerSources.from_str(s))
         
-        # may want to remove 'Disable' option, which would require SW trigger
-        return {str(s) for s in all_options}
+        rvs_map = {v: k for k, v in self._trigger_source_mapping.items()}
+        return {rvs_map[t] for t in ats_trig_sources}
 
     @property
-    def slope(self) -> str:
+    def slope(self) -> digitizer.TriggerSlope:
         if self._slope is None:
             raise RuntimeError("Slope not initialized")
-        return str(self._slope)
+        return self._slope
     
     @slope.setter
-    def slope(self, slope: str):
-        self._slope = Ats.TriggerSlopes.from_str(slope)
+    def slope(self, slope: digitizer.TriggerSlope):
+        if slope not in self.slope_options:
+            raise ValueError(f"Invalid trigger slope: {slope}. "
+                             f"Valid options: {self.slope_options}")
+        self._slope = slope
         self._set_trigger_operation()
 
     @property
-    def slope_options(self) -> set[str]:
-        options = [Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE,
-                   Ats.TriggerSlopes.TRIGGER_SLOPE_NEGATIVE]
-        return {str(s) for s in options}
+    def slope_options(self) -> set[digitizer.TriggerSlope]:
+        return {digitizer.TriggerSlope.RISING, digitizer.TriggerSlope.FALLING}
 
     @property
     def level(self) -> units.Voltage:
@@ -381,6 +415,7 @@ class AlazarTrigger(digitizer.Trigger):
             raise RuntimeError("Source not initialized")
         if self._level is None:
             raise RuntimeError("Trigger level not initialized")
+        
         trigger_channel = self._channels[self._source.channel_index]
         if trigger_channel._range is None:
             raise RuntimeError("Trigger channel not initialized")
@@ -391,21 +426,27 @@ class AlazarTrigger(digitizer.Trigger):
     def level(self, level: units.Voltage):
         if self._source is None:
             raise RuntimeError("Trigger source must be set before trigger level")
-        if self._source == Ats.TriggerSources.TRIG_DISABLE:
+        if self._source == digitizer.TriggerSource.INTERNAL:
             raise RuntimeError("Cannot set trigger level. Trigger is disabled")
-        if self._source == Ats.TriggerSources.TRIG_EXTERNAL:
+        if self._source == digitizer.TriggerSource.EXTERNAL:
             if self._external_range is None:
                 raise RuntimeError("External range not initialized")
-            trigger_source_range = self._external_range.to_volts 
+            if self._external_range == digitizer.ExternalTriggerRange.TTL:
+                trigger_source_range = units.VoltageRange(min="0 V", max="5 V")
+            else:
+                trigger_source_range = self._external_range 
         else:
-            trigger_channel = self._channels[self._source.channel_index]
-            if trigger_channel._range is None:
-                raise RuntimeError("External range not set")
-            trigger_source_range = trigger_channel._range.to_volts
-        if abs(level) > trigger_source_range:
+            raise NotImplementedError("Haven't completed trigger level for input channels")
+            # trigger_channel = self._channels[self._source.channel_index]
+            # if trigger_channel._range is None:
+            #     raise RuntimeError("Level range not set")
+            # trigger_source_range = trigger_channel._range.to_volts
+        
+        if not trigger_source_range.within_range(level):
             raise ValueError(f"Trigger level, {level} is outside the current trigger source range")
 
-        self._level = int(128 + 127 * level / trigger_source_range)
+        #self._level = 
+        self._level = level
         self._set_trigger_operation()
 
     @property
@@ -435,53 +476,77 @@ class AlazarTrigger(digitizer.Trigger):
         )
 
     @property
-    def external_coupling(self) -> str:
-        return str(self._external_coupling)
+    def external_coupling(self) -> digitizer.ExternalTriggerCoupling:
+        if self._external_coupling is None:
+            raise RuntimeError("External trigger coupling not initialized")
+        return self._external_coupling
 
     @external_coupling.setter
-    def external_coupling(self, external_coupling: str):
-        external_coupling_enum = Ats.Couplings.from_str(external_coupling)
-        self._external_coupling = external_coupling_enum
+    def external_coupling(self, external_coupling: digitizer.ExternalTriggerCoupling):
+        if external_coupling not in self.external_coupling_options:
+            raise ValueError(f"Unsupported external trigger coupling mode: {external_coupling}"
+                             f"Supported: {self.external_coupling_options}")
+        self._external_coupling = external_coupling
         self._set_external_trigger()
 
     @property
-    def external_coupling_options(self) -> set[str]:
+    def external_coupling_options(self) -> set[digitizer.ExternalTriggerCoupling]:
         # Only support DC external trigger. Only a few old boards support AC.
-        options = [Ats.Couplings.DC_COUPLING]
-        return {str(s) for s in options} # leave the comprehension in place in case we revise
+        return {digitizer.ExternalTriggerCoupling.DC,}
 
     @property
-    def external_range(self) -> str:
-        return str(self._external_range)
+    def external_range(self) -> units.VoltageRange | digitizer.ExternalTriggerRange:
+        if self._external_range is None:
+            raise ValueError("External range not initialized")
+        return self._external_range
     
     @external_range.setter
-    def external_range(self, range: str):
-        external_range_enum = Ats.ExternalTriggerRanges.from_str(range)
-        supported_ranges = self._board.bsi.external_trigger_ranges
-        if external_range_enum not in supported_ranges:
-            valid_options = ', '.join([str(s) for s in supported_ranges])
-            raise ValueError(f"Invalid trigger source: {external_range_enum}. "
-                             f"Valid options are: {valid_options}")
-        self._external_range = external_range_enum
+    def external_range(self, rng: units.VoltageRange | digitizer.ExternalTriggerRange):
+        if rng not in self.external_range_options:
+            raise ValueError(f"Invalid external trigger range: {rng}. "
+                             f"Valid options are: {self.external_range_options}")
+        self._external_range = rng
         self._set_external_trigger()
 
     @property
-    def external_range_options(self) -> set[str]:
-        options = self._board.bsi.external_trigger_ranges
-        return {str(s) for s in options}
+    def external_range_options(self) -> set[units.VoltageRange | digitizer.ExternalTriggerRange]:
+        ranges = []
+        for ats_range in self._board.bsi.external_trigger_ranges:
+            if ats_range == Ats.ExternalTriggerRanges.ETR_TTL:
+                ranges.append(digitizer.ExternalTriggerRange.TTL)
+            elif ats_range == Ats.ExternalTriggerRanges.ETR_1V_50OHM:
+                ranges.append(units.VoltageRange("-1 V", "1 V"))
+            elif ats_range == Ats.ExternalTriggerRanges.ETR_2V5_50OHM:
+                ranges.append(units.VoltageRange("-2.5 V", "2.5 V"))
+            elif ats_range == Ats.ExternalTriggerRanges.ETR_5V_50OHM:
+                ranges.append(units.VoltageRange("-5 V", "5 V"))
+            else:
+                raise RuntimeError(f"Encountered unsupported external trigger range: {ats_range}")
+        return set(ranges)
         
     def _set_trigger_operation(self):
         """
         Helper to set trigger operation if all required parameters have been set.
         By default, uses trigger engine J and disables engine K
         """
-        if self._source and self._slope and self._level:
+        if (self._source is not None) and (self._slope is not None):
+            if self._source == digitizer.TriggerSource.EXTERNAL:
+                if self._external_range is None:
+                    raise RuntimeError("External range not initialized")
+                if self._external_range == digitizer.ExternalTriggerRange.TTL:
+                    trigger_source_range = units.VoltageRange(min="0 V", max="5 V")
+                else:
+                    trigger_source_range = self._external_range 
+            else:
+                raise NotImplementedError("Haven't completed trigger level for input channels")
+            int_lvl = int(128 + 127 * (self._level-trigger_source_range.min) / trigger_source_range.range)
+            
             self._board.set_trigger_operation(
                 operation=Ats.TriggerOperations.TRIG_ENGINE_OP_J,
                 engine1=Ats.TriggerEngines.TRIG_ENGINE_J,
-                source1=self._source,
-                slope1=self._slope,
-                level1=self._level,
+                source1=self._trigger_source_mapping[self._source],
+                slope1=self._trigger_slope_mapping[self._slope],
+                level1=int_lvl,
                 engine2=Ats.TriggerEngines.TRIG_ENGINE_K,
                 source2=Ats.TriggerSources.TRIG_DISABLE,
                 slope2=Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE,
@@ -492,10 +557,24 @@ class AlazarTrigger(digitizer.Trigger):
         """
         Helper method to set external trigger parameters.
         """
-        if self._external_coupling and self._external_range:
+        if (self._external_coupling is not None) and (self._external_range is not None):
+            if isinstance(self._external_range, units.VoltageRange):
+                if self._external_range.max == units.Voltage("1 V"):
+                    rng = Ats.ExternalTriggerRanges.ETR_1V_50OHM
+                elif self._external_range.max == units.Voltage("2.5 V"):
+                    rng = Ats.ExternalTriggerRanges.ETR_2V5_50OHM
+                elif self._external_range.max == units.Voltage("5 V"):
+                    rng = Ats.ExternalTriggerRanges.ETR_5V_50OHM
+                else:
+                    raise RuntimeError(f"Unexpected external trigger range: {self._external_range}")
+            elif self._external_range == digitizer.ExternalTriggerRange.TTL:
+                rng = Ats.ExternalTriggerRanges.ETR_TTL
+            else:
+                raise RuntimeError(f"Unexpected external trigger range: {self._external_range}")
+
             self._board.set_external_trigger(
-                self._external_coupling, 
-                self._external_range
+                coupling=self._external_coupling_map[self._external_coupling], 
+                range=rng
             )
 
 
