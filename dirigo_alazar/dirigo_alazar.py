@@ -832,12 +832,12 @@ class AlazarAcquire(digitizer.Acquire):
             )
 
         self._board.before_async_read(
-            channels=channels_bit_mask,
-            transfer_offset=-self.pre_trigger_samples, # note the neg. value for pre-trigger samples
-            samples_per_record=self.record_length,
-            records_per_buffer=self.records_per_buffer,
-            records_per_acquisition=records_per_acquisition,
-            flags=flags
+            channels                = channels_bit_mask,
+            transfer_offset         = -self.pre_trigger_samples, # note the neg. value for pre-trigger samples
+            transfer_length         = self.record_length,
+            records_per_buffer      = self.records_per_buffer,
+            records_per_acquisition = records_per_acquisition,
+            flags                   = flags
         )
 
         # Allocate buffers
