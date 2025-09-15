@@ -1065,6 +1065,9 @@ class AlazarDigitizer(digitizer.Digitizer):
     """
 
     def __init__(self, system_id: int = 1, board_id: int = 1, **kwargs):
+        self.input_mode = digitizer.InputMode.ANALOG    # Alazar cards are analog-only
+        self.streaming_mode = digitizer.StreamingMode.TRIGGERED # Only triggered modes supported at this time
+
         # Check system
         nsystems = System.num_of_systems()
         if nsystems < 1:
