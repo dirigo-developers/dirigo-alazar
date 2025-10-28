@@ -148,6 +148,21 @@ class AlazarChannel(digitizer.Channel):
                 impedance=self._impedance_mapping[self._impedance],
             )
 
+    @property
+    def offset(self) -> units.Voltage:
+        """DC offset voltage. For AlazarTech, this is fixed at 0V."""
+        return units.Voltage("0 V")
+
+    @offset.setter
+    def offset(self, offset: units.Voltage):
+        if offset != units.Voltage("0 V"):
+            raise ValueError("DC offset is not user-settable on AlazarTech digitizers.")
+
+    @property
+    def offset_range(self) -> units.VoltageRange:
+        """Settable range for analog DC offset. For AlazarTech, this is fixed at 0V."""
+        return units.VoltageRange(min="0 V", max="0 V")
+
 
 class AlazarSampleClock(digitizer.SampleClock):
     """
