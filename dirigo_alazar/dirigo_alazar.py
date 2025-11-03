@@ -651,9 +651,7 @@ class AlazarAcquire(digitizer.Acquire):
 
     Properties:
         trigger_delay_samples (int): Delay between the trigger event and acquistion, in sample periods.
-        trigger_delay_duration (dirigo.Time): Delay between the trigger event and acquisition start, in time.
         record_length (int): Number of samples per record.
-        record_duration (dirigo.Time): Duration of record acquistion.
         records_per_buffer (int): Number of records per buffer.
         buffers_per_acquisition (int): Total number of buffers to acquire.
         buffers_allocated (int): Number of memory buffers allocated for acquisition.
@@ -704,12 +702,6 @@ class AlazarAcquire(digitizer.Acquire):
         self._trigger_delay = samples
 
     @property
-    def trigger_delay_duration(self) -> units.Time:
-        if self._trigger_delay is None:
-            raise RuntimeError("Trigger delay not initialized")
-        return units.Time(self._trigger_delay / self._sample_clock.rate)
-
-    @property
     def trigger_delay_sample_resolution(self) -> int:
         # samples per timestamp resolution is also the resolution for trigger delay
         return self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
@@ -752,12 +744,6 @@ class AlazarAcquire(digitizer.Acquire):
                              f"be multiple of {rec_res}")
         self._record_length = length
         self._set_record_size()
-
-    @property
-    def record_duration(self) -> units.Time:
-        if self._record_length is None:
-            raise RuntimeError("Record length not initialized")
-        return units.Time(self._record_length / self._sample_clock.rate)
 
     @property
     def record_length_minimum(self) -> int:
