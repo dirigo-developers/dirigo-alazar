@@ -507,6 +507,18 @@ class AlazarTrigger(digitizer.Trigger):
     def external_coupling_options(self) -> set[digitizer.ExternalTriggerCoupling]:
         # Only support DC external trigger. Only a few old boards support AC.
         return {digitizer.ExternalTriggerCoupling.DC,}
+    
+    @property
+    def external_impedance(self) -> units.Resistance | digitizer.ExternalTriggerImpedance:
+        pass
+
+    @external_impedance.setter
+    def external_impedance(self, imp: units.Resistance | digitizer.ExternalTriggerImpedance):
+        pass
+
+    @property
+    def external_impedance_options(self) -> set[units.Resistance | digitizer.ExternalTriggerImpedance]:
+        pass
 
     @property
     def external_range(self) -> units.VoltageRange | digitizer.ExternalTriggerRange:
@@ -527,7 +539,7 @@ class AlazarTrigger(digitizer.Trigger):
         ranges = []
         for ats_range in self._board.bsi.external_trigger_ranges:
             if ats_range == Ats.ExternalTriggerRanges.ETR_TTL:
-                ranges.append(digitizer.ExternalTriggerRange.TTL)
+                ranges.append(units.VoltageRange("0 V", "5 V"))
             elif ats_range == Ats.ExternalTriggerRanges.ETR_1V_50OHM:
                 ranges.append(units.VoltageRange("-1 V", "1 V"))
             elif ats_range == Ats.ExternalTriggerRanges.ETR_2V5_50OHM:
@@ -663,14 +675,14 @@ class AlazarAcquire(digitizer.Acquire):
 
     def __init__(self, board: AlazarBoard, sample_clock: AlazarSampleClock,
                  channels: tuple[AlazarChannel, ...]):
+        super().__init__()
         self._board = board
         self._sample_clock = sample_clock
         self._channels = channels
-
+        
         # Set some defaults
-        self._pre_trigger_samples: int = 0
-
-        self._trigger_delay: Optional[int] = None # in samples
+        self._trigger_offset: int = 0 # in samples
+        
         self._record_length: Optional[int] = None
         self._records_per_buffer: Optional[int] = None
         self._buffers_per_acquisition: Optional[int] = None # uses -1 to code for unlimited
@@ -682,46 +694,43 @@ class AlazarAcquire(digitizer.Acquire):
         self._buffers: Optional[list[Buffer]] = None
 
     @property
-    def trigger_delay_samples(self) -> int:
-        if self._trigger_delay is None:
-            raise RuntimeError("Trigger delay not initialized")
-        return self._trigger_delay
+    def trigger_offset(self) -> int:
+        return self._trigger_offset
 
-    @trigger_delay_samples.setter
-    def trigger_delay_samples(self, samples: int):
-        if not isinstance(samples, int):
-            raise ValueError("`trigger_delay_samples` must be set with an integer")
-        if not (0 <= samples < 9_999_999): # not clear whether this includes 9,999,999 or not, assume not
-            raise ValueError(f"`trigger_delay_samples` outside settable range, got {samples}")
-        if samples % self.trigger_delay_sample_resolution:
-            raise ValueError(
-                f"Attempted to set `trigger_delay_samples` {samples}, must"
-                f"be divisible by {self.trigger_delay_sample_resolution}."
-            )
-        self._board.set_trigger_delay(samples)
-        self._trigger_delay = samples
+    @trigger_offset.setter
+    def trigger_offset(self, offset: int):
+        if not isinstance(offset, int):
+            raise ValueError(f"Invalid trigger offset {offset}. Must be set with an integer")
+        if not self.trigger_offset_range.within_range(offset):
+            raise ValueError(f"Invalid trigger offset {offset}. "
+                             f"Must be in range, {self.trigger_offset_range}.")
+        
+        if offset > 0:
+            if offset % self.trigger_delay_resolution:
+                raise ValueError(
+                    f"Attempted to set `trigger_delay_samples` {offset}, must"
+                    f"be divisible by {self.trigger_delay_resolution}."
+                )
+            self._board.set_trigger_delay(offset)
+        elif offset < 0:
+            if offset % self.pre_trigger_resolution:
+                raise ValueError(
+                    f"Attempted to set pre-trigger samples {offset}, "
+                    f"must be multiple of {self.pre_trigger_resolution}"
+                )
+            self._set_record_size()
+        
+        self._trigger_offset = offset
 
     @property
-    def trigger_delay_sample_resolution(self) -> int:
+    def trigger_offset_range(self) -> units.IntRange:
+        # TODO, get the pre-trigger limit, depends on ADMA mode
+        return units.IntRange(-100, 9_999_999)
+
+    @property
+    def trigger_delay_resolution(self) -> int:
         # samples per timestamp resolution is also the resolution for trigger delay
-        return self._board.bsi.samples_per_timestamp(self.n_channels_enabled)
-
-    # TODO, combine the next three with trigger_delay
-    @property
-    def pre_trigger_samples(self) -> int:
-        return self._pre_trigger_samples
-    
-    @pre_trigger_samples.setter
-    def pre_trigger_samples(self, samples: int):
-        if samples < 0:
-            raise ValueError(f"Attempted to set pre-trigger samples {samples} "
-                             f"must be ≥ 0")
-        pretrig_res = self.pre_trigger_resolution
-        if samples % pretrig_res != 0:
-            raise ValueError(f"Attempted to set pre-trigger samples {samples}, "
-                             f"must be multiple of {pretrig_res}")
-        self._pre_trigger_samples = samples
-        self._set_record_size()
+        return self._board.bsi.samples_per_timestamp(self.n_channels_enabled)        
 
     @property
     def pre_trigger_resolution(self) -> int:
@@ -834,7 +843,7 @@ class AlazarAcquire(digitizer.Acquire):
 
         self._board.before_async_read(
             channels                = channels_bit_mask,
-            transfer_offset         = -self.pre_trigger_samples, # note the neg. value for pre-trigger samples
+            transfer_offset         = self.trigger_offset, # neg. value for pre-trigger samples
             transfer_length         = self.record_length,
             records_per_buffer      = self.records_per_buffer,
             records_per_acquisition = records_per_acquisition,
@@ -867,6 +876,7 @@ class AlazarAcquire(digitizer.Acquire):
             self._board.bsi.samples_per_timestamp(self.n_channels_enabled) \
             / self._sample_clock.rate 
         
+        self._active.set()
         self._board.start_capture()
 
     @property
@@ -904,6 +914,7 @@ class AlazarAcquire(digitizer.Acquire):
 
     def stop(self):
         self._board.abort_async_read()
+        self._active.clear()
 
     @property
     def adma_mode(self) -> str: # TODO, should we use Alazar-specific enumeration here?
@@ -975,36 +986,36 @@ class AlazarAuxiliaryIO(digitizer.AuxiliaryIO):
         self._board = board
         self._mode: Optional[Ats.AuxIOModes] = None
 
-    def configure_mode(self, mode: digitizer.AuxiliaryIOEnums, **kwargs):
+    def configure_mode(self, mode: digitizer.AuxiliaryIOMode, **kwargs):
         """
         Usage:
-        for mode AuxiliaryIOEnums.OutTrigger, no keyword arg required,
-        for mode AuxiliaryIOEnums.OutPacer, provide 'divider' keyword arg (int),
-        for mode AuxiliaryIOEnums.OutDigital, provide 'state' keyword arg (bool),
-        for mode AuxiliaryIOEnums.InTriggerEnable, provide 'slope' keyword arg (digitizer.TriggerSlope),
-        for mode AuxiliaryIOEnums.InDigital, no keyword arg required.
+        for mode OUT_TRIGGER, no keyword arg required,
+        for mode OUT_PACER, provide 'divider' keyword arg (int),
+        for mode OUT_DIGITAL, provide 'state' keyword arg (bool),
+        for mode IN_TRIGGER_ENABLE, provide 'slope' keyword arg (digitizer.TriggerSlope),
+        for mode IN_DIGITAL, no keyword arg required.
         """
-        if mode == digitizer.AuxiliaryIOEnums.OutTrigger:
+        if mode == digitizer.AuxiliaryIOMode.OUT_TRIGGER:
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_OUT_TRIGGER, 
                 parameter   = 0 # have to provide, but not used
             )
 
-        elif mode == digitizer.AuxiliaryIOEnums.OutPacer:
+        elif mode == digitizer.AuxiliaryIOMode.OUT_PACER:
             divider = int(kwargs["divider"])
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_OUT_PACER, 
                 parameter   = divider
             )
 
-        elif mode == digitizer.AuxiliaryIOEnums.OutDigital:
+        elif mode == digitizer.AuxiliaryIOMode.OUT_DIGITAL:
             state = bool(kwargs.get('state'))
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_OUT_SERIAL_DATA, 
                 parameter   = state
             )
 
-        elif mode == digitizer.AuxiliaryIOEnums.InTriggerEnable:
+        elif mode == digitizer.AuxiliaryIOMode.IN_TRIGGER_ENABLE:
             slope = kwargs["slope"]
             if slope == digitizer.TriggerSlope.RISING:
                 ats_slope = Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE
@@ -1017,7 +1028,7 @@ class AlazarAuxiliaryIO(digitizer.AuxiliaryIO):
                 parameter   = ats_slope
             )
 
-        elif mode == digitizer.AuxiliaryIOEnums.InDigital:
+        elif mode == digitizer.AuxiliaryIOMode.IN_DIGITAL:
             self._board.configure_aux_io(
                 mode        = Ats.AuxIOModes.AUX_IN_AUXILIARY, 
                 parameter   = 0
