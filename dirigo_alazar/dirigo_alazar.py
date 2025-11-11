@@ -375,7 +375,8 @@ class AlazarTrigger(digitizer.Trigger):
         self._source: digitizer.TriggerSource | None = None
         self._slope: digitizer.TriggerSlope | None = None
         self._external_coupling: digitizer.ExternalTriggerCoupling | None = None
-        self._external_range: units.VoltageRange | digitizer.ExternalTriggerRange | None = None
+        self._external_impedance: units.Resistance | digitizer.ChannelImpedance | None = None
+        self._external_range: units.VoltageRange | None = None
         self._level: units.Voltage = units.Voltage("0 V") # level is an 8-bit value in ATSApi
 
     @property
@@ -505,29 +506,44 @@ class AlazarTrigger(digitizer.Trigger):
 
     @property
     def external_coupling_options(self) -> set[digitizer.ExternalTriggerCoupling]:
-        # Only support DC external trigger. Only a few old boards support AC.
+        # Only support DC external trigger. Only a few old boards (e.g. ATS460) 
+        # support AC coupled external trigger.
         return {digitizer.ExternalTriggerCoupling.DC,}
     
     @property
-    def external_impedance(self) -> units.Resistance | digitizer.ExternalTriggerImpedance:
-        pass
+    def external_impedance(self) -> units.Resistance | digitizer.ChannelImpedance:
+        if self._external_impedance is None:
+            raise RuntimeError("External impedance not initialized.")
+        return self._external_impedance
 
     @external_impedance.setter
-    def external_impedance(self, imp: units.Resistance | digitizer.ExternalTriggerImpedance):
-        pass
+    def external_impedance(self, imp: units.Resistance | digitizer.ChannelImpedance):
+        if imp not in self.external_impedance_options:
+            raise ValueError("Invalid external impedance")
+        self._external_impedance = imp
+        self._set_external_trigger()
 
+    @cached_property # cache this since it won't change
+    def external_impedance_options(self) -> set[units.Resistance | digitizer.ChannelImpedance]:
+        bsi_etr = set(self._board.bsi.external_trigger_ranges)
+        etr_50ohm = set((Ats.ExternalTriggerRanges.ETR_1V_50OHM, 
+                         Ats.ExternalTriggerRanges.ETR_2V5_50OHM, 
+                         Ats.ExternalTriggerRanges.ETR_5V_50OHM))
+        etr_options = []
+        if bsi_etr.intersection(etr_50ohm):
+            etr_options.append(units.Resistance("50 ohm"))
+        if Ats.ExternalTriggerRanges.ETR_TTL in bsi_etr:
+            etr_options.append(digitizer.ChannelImpedance.HIGH)
+        return set(etr_options)
+    
     @property
-    def external_impedance_options(self) -> set[units.Resistance | digitizer.ExternalTriggerImpedance]:
-        pass
-
-    @property
-    def external_range(self) -> units.VoltageRange | digitizer.ExternalTriggerRange:
+    def external_range(self) -> units.VoltageRange:
         if self._external_range is None:
             raise ValueError("External range not initialized")
         return self._external_range
     
     @external_range.setter
-    def external_range(self, rng: units.VoltageRange | digitizer.ExternalTriggerRange):
+    def external_range(self, rng: units.VoltageRange):
         if rng not in self.external_range_options:
             raise ValueError(f"Invalid external trigger range: {rng}. "
                              f"Valid options are: {self.external_range_options}")
@@ -535,7 +551,7 @@ class AlazarTrigger(digitizer.Trigger):
         self._set_external_trigger()
 
     @property
-    def external_range_options(self) -> set[units.VoltageRange | digitizer.ExternalTriggerRange]:
+    def external_range_options(self) -> set[units.VoltageRange]:
         ranges = []
         for ats_range in self._board.bsi.external_trigger_ranges:
             if ats_range == Ats.ExternalTriggerRanges.ETR_TTL:
@@ -555,52 +571,61 @@ class AlazarTrigger(digitizer.Trigger):
         Helper to set trigger operation if all required parameters have been set.
         By default, uses trigger engine J and disables engine K
         """
-        if (self._source is not None) and (self._slope is not None):
+        source_set = self._source is not None
+        slope_set = self._slope is not None
+        if source_set and slope_set:
             if self._source == digitizer.TriggerSource.EXTERNAL:
                 if self._external_range is None:
                     raise RuntimeError("External range not initialized")
-                if self._external_range == digitizer.ExternalTriggerRange.TTL:
-                    trigger_source_range = units.VoltageRange(min="0 V", max="5 V")
-                else:
-                    trigger_source_range = self._external_range 
-            else:
+            else: # TriggerSource is one of the Channels
                 raise NotImplementedError("Haven't completed trigger level for input channels")
-            int_lvl = int(128 + 127 * (self._level / trigger_source_range.range))
+            int_lvl = int(128 + 127 * (self._level / self._external_range.range))
             
             self._board.set_trigger_operation(
-                operation=Ats.TriggerOperations.TRIG_ENGINE_OP_J,
-                engine1=Ats.TriggerEngines.TRIG_ENGINE_J,
-                source1=self._trigger_source_mapping[self._source],
-                slope1=self._trigger_slope_mapping[self._slope],
-                level1=int_lvl,
-                engine2=Ats.TriggerEngines.TRIG_ENGINE_K,
-                source2=Ats.TriggerSources.TRIG_DISABLE,
-                slope2=Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE,
-                level2=0
+                operation   = Ats.TriggerOperations.TRIG_ENGINE_OP_J,
+                engine1     = Ats.TriggerEngines.TRIG_ENGINE_J,
+                source1     = self._trigger_source_mapping[self._source],
+                slope1      = self._trigger_slope_mapping[self.slope],
+                level1      = int_lvl,
+                engine2     = Ats.TriggerEngines.TRIG_ENGINE_K,
+                source2     = Ats.TriggerSources.TRIG_DISABLE,
+                slope2      = Ats.TriggerSlopes.TRIGGER_SLOPE_POSITIVE,
+                level2      = 0
             )
 
     def _set_external_trigger(self):
         """
         Helper method to set external trigger parameters.
         """
-        if (self._external_coupling is not None) and (self._external_range is not None):
-            if isinstance(self._external_range, units.VoltageRange):
-                if self._external_range.max == units.Voltage("1 V"):
-                    rng = Ats.ExternalTriggerRanges.ETR_1V_50OHM
-                elif self._external_range.max == units.Voltage("2.5 V"):
-                    rng = Ats.ExternalTriggerRanges.ETR_2V5_50OHM
-                elif self._external_range.max == units.Voltage("5 V"):
-                    rng = Ats.ExternalTriggerRanges.ETR_5V_50OHM
-                else:
-                    raise RuntimeError(f"Unexpected external trigger range: {self._external_range}")
-            elif self._external_range == digitizer.ExternalTriggerRange.TTL:
-                rng = Ats.ExternalTriggerRanges.ETR_TTL
-            else:
-                raise RuntimeError(f"Unexpected external trigger range: {self._external_range}")
+        coupling_set = self._external_coupling is not None
+        impedance_set = self._external_impedance is not None
+        range_set = self._external_range is not None
+        if coupling_set and impedance_set and range_set:
+            ats_rng = None
 
+            if self._external_impedance == digitizer.ChannelImpedance.HIGH:
+                # check that the voltage range is consistent with TTL
+                if self._external_range == units.VoltageRange("0 V", "5 V"):
+                    ats_rng = Ats.ExternalTriggerRanges.ETR_TTL
+                
+            elif self._external_impedance == units.Resistance("50 ohm"):
+                if self._external_range == units.VoltageRange("±1 V"):
+                    ats_rng = Ats.ExternalTriggerRanges.ETR_1V_50OHM
+                elif self._external_range == units.VoltageRange("±2.5 V"):
+                    ats_rng = Ats.ExternalTriggerRanges.ETR_2V5_50OHM
+                elif self._external_range == units.VoltageRange("±5 V"):
+                    ats_rng = Ats.ExternalTriggerRanges.ETR_5V_50OHM
+
+            if ats_rng is None:
+                raise ValueError("Unsupported external trigger parameter combination. "
+                                 f"Coupling: {self._external_coupling}, "
+                                 f"Impedance: {self._external_impedance}, "
+                                 f"Range: {self._external_range}.")
+            
+            assert self._external_coupling is not None
             self._board.set_external_trigger(
-                coupling=self._external_coupling_map[self._external_coupling], 
-                range=rng
+                coupling    = self._external_coupling_map[self._external_coupling], 
+                range       = ats_rng
             )
 
 
@@ -834,7 +859,7 @@ class AlazarAcquire(digitizer.Acquire):
             elif self._adma_mode == Ats.ADMAModes.ADMA_NPT:
                 flags = flags | Ats.ADMAFlags.ADMA_ENABLE_RECORD_FOOTERS
 
-        if self.buffers_per_acquisition == float('inf'):
+        if self.buffers_per_acquisition == float('inf') or self.buffers_per_acquisition == -1:
             records_per_acquisition = 0x7FFFFFFF
         else:
             records_per_acquisition = int(
@@ -843,7 +868,7 @@ class AlazarAcquire(digitizer.Acquire):
 
         self._board.before_async_read(
             channels                = channels_bit_mask,
-            transfer_offset         = self.trigger_offset, # neg. value for pre-trigger samples
+            transfer_offset         = max(-self.trigger_offset, 0), # pre-trigger samples should be negative, don't specify delay here
             transfer_length         = self.record_length,
             records_per_buffer      = self.records_per_buffer,
             records_per_acquisition = records_per_acquisition,
@@ -945,9 +970,9 @@ class AlazarAcquire(digitizer.Acquire):
 
     def _set_record_size(self):
         """Helper"""
-        if self._pre_trigger_samples and self._record_length:
+        if self._record_length:
             self._board.set_record_size(
-                pre_trigger_samples=self._pre_trigger_samples, 
+                pre_trigger_samples=max(0, -self.trigger_offset), 
                 post_trigger_samples=self._record_length)
             
     @cached_property
