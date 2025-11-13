@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dirigo_alazar"
-version = "0.2.1"
+version = "0.2.2"
 description = "Plugin to use Alazar cards with Dirigo."
 authors = [
     {name = "T. D. Weber", email = "tweber@mit.edu"}
@@ -13,7 +13,7 @@ license = {text = "MIT"}
 dependencies = [
     "numba",
     "dirigo",
-    "atsbindings>=0.2.2"
+    "atsbindings>=0.2.3"
 ]
 
 [project.entry-points."dirigo_digitizers"]

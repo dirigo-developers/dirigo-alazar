@@ -10,7 +10,7 @@ digitizer = AlazarDigitizer()
 for i, channel in enumerate(digitizer.channels):
     channel.coupling = "DC"
     channel.impedance = "50 Ω"
-    channel.range = units.VoltageRange("±2 V")
+    channel.input_range = units.VoltageRange("±2 V")
     channel.enabled = i < 2
 
 # Horizontal
