@@ -4,17 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dirigo_alazar"
-version = "0.2.3"
-description = "Plugin to use Alazar cards with Dirigo."
+version = "0.2.4"
+description = "Plugin to use Alazar cards with Dirigo"
 authors = [
     {name = "T. D. Weber", email = "tweber@mit.edu"}
 ]
 license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: System :: Hardware"
+]
 dependencies = [
     "numba",
     "dirigo",
     "atsbindings>=0.2.3"
 ]
+urls = {"Homepage" = "https://github.com/dirigo-developers/dirigo-alazar"}
 
 [project.entry-points."dirigo_digitizers"]
 alazar = "dirigo_alazar:AlazarDigitizer"
