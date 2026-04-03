@@ -4,7 +4,7 @@
 > **Note**  
 > This is a hardware plugin for Dirigo and is not intended to be used as a standalone library. 
 
-![PyPI](https://img.shields.io/pypi/v/dirigo-alazar)
+[![PyPI](https://img.shields.io/pypi/v/dirigo-alazar)](https://pypi.org/project/dirigo-alazar/0.2.4/)
 
 
 ## Installation
@@ -15,6 +15,9 @@ pip install dirigo-alazar
 ```
 
 Verify that your device is recognized in the AlazarDSO utility and functioning before using this plugin.
+
+## Default profile
+Dirigo acquisition sequences generally require a default digitizer profile. See the Dirigo (README)[https://github.com/dirigo-developers/dirigo/blob/main/README.md] and [examples/](examples/).
 
 
 ## Legal Disclaimer

@@ -1,0 +1,22 @@
+# Example digitizer profile for AlazarTech ATS9440
+
+channels = [
+    {enabled=true,  inverted=false, coupling="DC", impedance="50 ohm", range="±2 V"},
+    {enabled=true,  inverted=false, coupling="DC", impedance="50 ohm", range="±2 V"},
+    {enabled=false, inverted=false, coupling="DC", impedance="50 ohm", range="±2 V"},
+    {enabled=false, inverted=false, coupling="DC", impedance="50 ohm", range="±2 V"},
+]
+
+
+[sample_clock]
+source = "External" # Sync'ed to Ti:Saphh
+rate = "80.37 MS/s" # Measure this as accurately as possible.
+edge = "Rising"
+
+
+[trigger]
+source = "External"
+slope = "Falling"
+level = "1.0 V"
+external_range = "TTL"
+external_coupling = "DC"

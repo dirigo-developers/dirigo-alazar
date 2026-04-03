@@ -1,0 +1,20 @@
+# Example digitizer profile for AlazarTech ATS9870
+
+channels = [
+    {enabled=true,  inverted=false, coupling="DC", impedance="50 ohm", range="±1 V"},
+    {enabled=true,  inverted=false, coupling="DC", impedance="50 ohm", range="±1 V"},
+]
+
+
+[sample_clock]
+source = "Internal"
+rate = "250 MS/s" 
+edge = "Rising"
+
+
+[trigger]
+source = "External"
+slope = "Rising"
+level = "0.5 V"
+external_range = "±5 V"
+external_coupling = "DC"
