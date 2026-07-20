@@ -917,7 +917,7 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, acq_buf: AcquisitionProduct, timeout: units.Time | None): 
+    def get_next_completed_buffer(self, acq_buffer: AcquisitionProduct, timeout: units.Time | None): 
         """Retrieve the next available buffer"""
         if self._buffers is None:
             raise RuntimeError("Buffers not initialized")
@@ -934,19 +934,19 @@ class AlazarAcquire(digitizer.Acquire):
         else:
             self._board.wait_async_buffer_complete(buffer.address)
 
-        buffer.get_data(acq_buf.data)
+        buffer.get_data(acq_buffer.data)
 
         # ATS API returns offset unsigned 8 or 16 bit data, fully scaled to 8 or 
         # 16 bits regardless of the digitizer bit depth. Fix this before passing.
-        if acq_buf.data.dtype == np.uint8:
-            fix_alazar_inplace_8(acq_buf.data, 8 - self._bit_depth)
-            acq_buf.data.dtype = np.int8 # type: ignore
+        if acq_buffer.data.dtype == np.uint8:
+            fix_alazar_inplace_8(acq_buffer.data, 8 - self._bit_depth)
+            acq_buffer.data.dtype = np.int8 # type: ignore
         else:
-            fix_alazar_inplace_16(acq_buf.data, 16 - self._bit_depth)
-            acq_buf.data.dtype = np.int16 # type: ignore
+            fix_alazar_inplace_16(acq_buffer.data, 16 - self._bit_depth)
+            acq_buffer.data.dtype = np.int16 # type: ignore
 
         # Retrieve timestamps
-        acq_buf.timestamps = self._sec_per_tic * np.array(buffer.get_timestamps())
+        acq_buffer.timestamps = self._sec_per_tic * np.array(buffer.get_timestamps())
         self._buffers_acquired += 1
 
         # Repost buffer
