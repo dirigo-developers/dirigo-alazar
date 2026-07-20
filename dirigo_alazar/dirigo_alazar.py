@@ -917,7 +917,7 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, acq_buf: AcquisitionProduct): 
+    def get_next_completed_buffer(self, acq_buf: AcquisitionProduct, timeout: units.Time | None): 
         """Retrieve the next available buffer"""
         if self._buffers is None:
             raise RuntimeError("Buffers not initialized")
@@ -926,7 +926,13 @@ class AlazarAcquire(digitizer.Acquire):
         buffer = self._buffers[buffer_index]
 
         # Wait for the buffer to complete and copy data when ready--want this to be long
-        self._board.wait_async_buffer_complete(buffer.address)
+        if timeout is not None:
+            self._board.wait_async_buffer_complete(
+                buffer      = buffer.address,
+                timeout_ms  = round(1000*float(timeout))
+            )
+        else:
+            self._board.wait_async_buffer_complete(buffer.address)
 
         buffer.get_data(acq_buf.data)
 
