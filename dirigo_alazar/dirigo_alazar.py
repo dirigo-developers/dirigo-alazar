@@ -721,7 +721,12 @@ class AlazarAcquire(digitizer.Acquire):
         self._records_per_buffer: Optional[int] = None
         self._buffers_per_acquisition: Optional[int] = None # uses -1 to code for unlimited
 
-        self._adma_mode: Ats.ADMAModes = Ats.ADMAModes.ADMA_TRADITIONAL_MODE # TODO allow setting NPT mode
+        # Traditional ADMA mode is preferred, but set NPT if it's not supported (e.g. ATS9373)
+        if self.supports_traditional_adma:
+            self._adma_mode = Ats.ADMAModes.ADMA_TRADITIONAL_MODE
+        else:
+            self._adma_mode = Ats.ADMAModes.ADMA_NPT
+            
         self._timestamps_enabled: bool = False
 
         self._buffers_allocated: Optional[int] = None
@@ -917,7 +922,9 @@ class AlazarAcquire(digitizer.Acquire):
     def buffers_acquired(self) -> int:
         return self._buffers_acquired
 
-    def get_next_completed_buffer(self, acq_buffer: AcquisitionProduct, timeout: units.Time | None): 
+    def get_next_completed_buffer(self, 
+                                  acq_buffer: AcquisitionProduct, 
+                                  timeout: units.Time | None = None): 
         """Retrieve the next available buffer"""
         if self._buffers is None:
             raise RuntimeError("Buffers not initialized")
@@ -963,7 +970,7 @@ class AlazarAcquire(digitizer.Acquire):
 
     @adma_mode.setter
     def adma_mode(self, new_adma_mode: str):
-        """Set ADMA mode (default without using setter is 'Traditional')"""
+        """Set ADMA mode"""
         self._adma_mode = Ats.ADMAModes.from_str(str(new_adma_mode))
 
     @property
@@ -1007,6 +1014,16 @@ class AlazarAcquire(digitizer.Acquire):
             Ats.BoardType.ATS855,
             Ats.BoardType.ATS860,
             Ats.BoardType.ATS9462 # and ATS9462 (see reference)
+        }
+        if self._board.get_board_kind() in unsupported_boards:
+            return False
+        else:
+            return True
+        
+    @cached_property
+    def supports_traditional_adma(self) -> bool:
+        unsupported_boards = {
+            Ats.BoardType.ATS9373, # likely incomplete
         }
         if self._board.get_board_kind() in unsupported_boards:
             return False
