@@ -4,7 +4,7 @@
 > **Note**  
 > This is a hardware plugin for Dirigo and is not intended to be used as a standalone library. 
 
-[![PyPI](https://img.shields.io/pypi/v/dirigo-alazar)](https://pypi.org/project/dirigo-alazar/0.2.4/)
+[![PyPI](https://img.shields.io/pypi/v/dirigo-alazar)](https://pypi.org/project/dirigo-alazar/0.2.7/)
 
 
 ## Installation
