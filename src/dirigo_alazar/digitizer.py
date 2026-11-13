@@ -39,8 +39,7 @@ class AlazarDigitizer(Digitizer):
     Use one logical digitizer per board. Reservations do not coordinate other
     objects or applications accessing the same physical board.
 
-    The planned sample representation is signed, right-justified ADC codes
-    stored in int8 or int16. This preparation increment cannot acquire data.
+    Samples are signed, right-justified ADC codes stored in int8 or int16.
     """
 
     config_type = AlazarDigitizerConfig
@@ -328,8 +327,10 @@ class _AlazarCaptureSession(DigitizerCaptureSession):
         *,
         timeout: float | None,
     ) -> CaptureInfo:
-        """Reject readout until the next increment implements batch delivery."""
-        raise NotImplementedError("Alazar DMA readout is not implemented yet.")
+        """Deliver one complete batch using the prepared native buffer pool."""
+        assert self._pool is not None
+        self._pool.read_into(destination, timeout=timeout)
+        return CaptureInfo()
 
     def _stop_capture(self) -> None:
         """Abort DMA while retaining buffers and the input reservation."""

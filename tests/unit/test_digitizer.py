@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
+from importlib import metadata as importlib_metadata
 from types import ModuleType, SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, call
@@ -10,7 +11,7 @@ from unittest.mock import Mock, call
 import numpy as np
 import pytest
 from dirigo import units
-from dirigo.hardware.capture import CaptureSettings
+from dirigo.hardware.capture import CaptureSettings, SampleArray
 from dirigo.hardware.capture_session import CaptureState, DigitizerCaptureSession
 from dirigo.hardware.timing import (
     DigitalRecordTrigger,
@@ -20,6 +21,7 @@ from dirigo.hardware.timing import (
 )
 
 from dirigo_alazar import digitizer as digitizer_module
+from dirigo_alazar import dma as dma_module
 from dirigo_alazar.digitizer import AlazarDigitizer
 from dirigo_alazar.settings import (
     AlazarCaptureSettings,
@@ -27,6 +29,15 @@ from dirigo_alazar.settings import (
     Coupling,
     ExternalTriggerRange,
 )
+
+
+class FakeAlazarError(RuntimeError):
+    """Emulate the typed SDK exception without importing the native library."""
+
+    def __init__(self, code: int) -> None:
+        """Retain the native status code for adapter classification."""
+        self.code = code
+        super().__init__(f"Mock SDK error {code}")
 
 
 @dataclass
@@ -97,9 +108,18 @@ def sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDK:
 
     def allocate(**kwargs: object) -> Mock:
         """Record allocation and provide a uniquely identified transfer buffer."""
-        buffer = Mock(spec=["address", "size", "close"])
+        buffer = Mock(spec=["address", "size", "close", "buffer"])
         buffer.address = len(buffers) + 1
-        buffer.size = 32768
+        bits = board.get_channel_info.return_value[1]
+        dtype = np.uint8 if bits <= 8 else np.uint16
+        buffer.buffer = np.empty(
+            (
+                cast(int, kwargs["records_per_buffer"]),
+                cast(int, kwargs["channels"]) * cast(int, kwargs["samples_per_record"]),
+            ),
+            dtype=dtype,
+        )
+        buffer.size = buffer.buffer.nbytes
         buffer.close.side_effect = lambda: events.append("free")
         buffers.append(buffer)
         events.append("allocate")
@@ -113,9 +133,22 @@ def sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDK:
 
     factory = Mock(return_value=board)
     module = ModuleType("atsbindings")
-    module.__dict__.update(Board=factory, Ats=ats, Buffer=buffer_factory)
+    module.__dict__.update(
+        Board=factory,
+        Ats=ats,
+        Buffer=buffer_factory,
+        AlazarError=FakeAlazarError,
+    )
     loader = Mock(return_value=module)
     monkeypatch.setattr(digitizer_module, "import_module", loader)
+
+    def completed(address: int, *, timeout_ms: int) -> None:
+        """Supply offset-binary zero-voltage samples when a buffer completes."""
+        buffer = next(item for item in buffers if item.address == address)
+        buffer.buffer.fill(1 << (buffer.buffer.dtype.itemsize * 8 - 1))
+
+    board.wait_async_buffer_complete.side_effect = completed
+
     return FakeSDK(board, factory, ats, loader, buffer_factory, buffers, events)
 
 
@@ -398,23 +431,6 @@ def test_identity_and_snapshot_use_cached_discovery(
     assert sdk.board.mock_calls == []
 
 
-def test_readout_remains_explicitly_unavailable(
-    capture: DigitizerCaptureSession,
-    sdk: FakeSDK,
-) -> None:
-    """Reject reads until batch delivery is implemented, aborting the armed run."""
-    capture.prepare()
-    capture.start()
-    samples = np.empty(capture.layout.shape, dtype=capture.layout.dtype)
-
-    with pytest.raises(NotImplementedError, match="DMA readout"):
-        capture.read_into(samples)
-
-    assert capture.state is CaptureState.CLOSED
-    sdk.board.start_capture.assert_called_once()
-    sdk.board.abort_async_read.assert_called_once()
-
-
 def test_wrong_config_is_rejected_before_connecting(sdk: FakeSDK) -> None:
     """Require the declared initialization model before touching the SDK."""
     with pytest.raises(TypeError, match="AlazarDigitizerConfig"):
@@ -638,3 +654,336 @@ def test_buffer_release_failure_does_not_skip_remaining_releases(
 
     assert [buffer.close.call_count for buffer in sdk.buffers] == [1, 2, 1]
     sdk.board.abort_async_read.assert_called_once()
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Control elapsed wait time without sleeping or accessing hardware."""
+    state = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(dma_module, "monotonic", lambda: state.now)
+    return state
+
+
+@pytest.mark.parametrize(
+    ("bits", "raw_words", "codes"),
+    [
+        (8, (0x00, 0x7F, 0x80, 0xFF), (-128, -1, 0, 127)),
+        (12, (0x0000, 0x7FF0, 0x8000, 0xFFF0), (-2048, -1, 0, 2047)),
+        (14, (0x0000, 0x7FFC, 0x8000, 0xFFFC), (-8192, -1, 0, 8191)),
+        (14, (0x0003, 0x7FFF, 0x8003, 0xFFFF), (-8192, -1, 0, 8191)),
+        (16, (0x0000, 0x7FFF, 0x8000, 0xFFFF), (-32768, -1, 0, 32767)),
+    ],
+)
+@pytest.mark.parametrize("channels", [(0, 1), (1, 0), (1,)])
+def test_readout_decodes_npt_layout_and_adc_codes(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+    bits: int,
+    raw_words: tuple[int, ...],
+    codes: tuple[int, ...],
+    channels: tuple[int, ...],
+) -> None:
+    """Convert golden ADC words while preserving records and requested channels.
+
+    Native memory contains complete channel blocks in ascending physical
+    order. Different channel patterns and record rotations distinguish every
+    axis. Output has signed ADC-resolution codes; source bytes, destination
+    shape, and destination dtype must remain unchanged.
+    """
+    sdk.board.get_channel_info.return_value = (2**20, bits)
+    requested = replace(
+        settings,
+        record_length=256,
+        batch_count=1,
+        channel_indices=channels,
+    )
+    session = digitizer.create_capture(requested)
+
+    try:
+        session.prepare()
+        session.start()
+        buffer = sdk.buffers[0]
+        raw = np.empty((len(channels), 2, 256), dtype=buffer.buffer.dtype)
+        expected = np.empty(session.layout.shape, dtype=session.layout.dtype)
+
+        for native_index, physical in enumerate(sorted(channels)):
+            words = raw_words if physical == 0 else raw_words[::-1]
+            raw[native_index, 0] = np.tile(words, 64)
+            raw[native_index, 1] = np.roll(raw[native_index, 0], physical + 1)
+
+        for output, physical in enumerate(channels):
+            values = codes if physical == 0 else codes[::-1]
+            expected[0, :, output] = np.tile(values, 64)
+            expected[1, :, output] = np.roll(expected[0, :, output], physical + 1)
+
+        def complete(address: int, *, timeout_ms: int) -> None:
+            """Deliver this exact flat, channel-major payload."""
+            assert address == buffer.address
+            np.copyto(buffer.buffer.reshape(-1), raw.reshape(-1))
+
+        sdk.board.wait_async_buffer_complete.side_effect = complete
+        destination = np.empty(session.layout.shape, dtype=session.layout.dtype)
+        shape, dtype = destination.shape, destination.dtype
+
+        info = session.read_into(destination, timeout=0)
+
+        assert info is not None
+        assert info.timestamps is None
+        np.testing.assert_array_equal(destination, expected)
+        np.testing.assert_array_equal(buffer.buffer.reshape(-1), raw.reshape(-1))
+        assert destination.shape == shape
+        assert destination.dtype == dtype
+        assert session.state is CaptureState.COMPLETED
+        assert session.read_into(destination, timeout=0) is None
+        sdk.board.wait_async_buffer_complete.assert_called_once()
+    finally:
+        session.close()
+
+
+def test_finite_readout_recycles_only_required_buffers(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+) -> None:
+    """Read five batches through two buffers and post exactly five times.
+
+    Simulate immediate buffer overwrite on repost. Previously returned caller
+    arrays must retain their data. Repeated finite exhaustion performs no
+    additional native wait or post operation.
+    """
+    requested = replace(
+        settings,
+        record_length=256,
+        batch_count=5,
+        dma_buffer_count=2,
+    )
+    session = digitizer.create_capture(requested)
+    retained: list[SampleArray] = []
+
+    try:
+        session.prepare()
+        session.start()
+        completed = 0
+
+        def complete(address: int, *, timeout_ms: int) -> None:
+            """Encode successive positive 14-bit sample codes."""
+            nonlocal completed
+            completed += 1
+            buffer = next(item for item in sdk.buffers if item.address == address)
+            buffer.buffer.fill(0x8000 + completed * 4)
+
+        def repost(address: int, size: int) -> None:
+            """Model DMA reclaiming the buffer immediately after posting."""
+            buffer = next(item for item in sdk.buffers if item.address == address)
+            buffer.buffer.fill(0)
+
+        sdk.board.wait_async_buffer_complete.side_effect = complete
+        sdk.board.post_async_buffer.side_effect = repost
+
+        for index in range(5):
+            destination = np.empty(session.layout.shape, dtype=session.layout.dtype)
+            assert session.read_into(destination, timeout=0) is not None
+            np.testing.assert_array_equal(
+                destination,
+                np.full(destination.shape, index + 1),
+            )
+            retained.append(destination)
+
+        assert session.read_into(retained[-1], timeout=0) is None
+        assert session.read_into(retained[-1], timeout=0) is None
+        assert session.batches_acquired == 5
+        assert session.state is CaptureState.COMPLETED
+
+        waits = sdk.board.wait_async_buffer_complete.call_args_list
+        posts = sdk.board.post_async_buffer.call_args_list
+        assert [item.args[0] for item in waits] == [1, 2, 1, 2, 1]
+        assert [item.args[0] for item in posts] == [1, 2, 1, 2, 1]
+    finally:
+        session.close()
+
+    for index, destination in enumerate(retained):
+        np.testing.assert_array_equal(
+            destination,
+            np.full(destination.shape, index + 1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("budget", "waits"),
+    [(0.0, [0]), (0.0004, [0]), (0.025, [25]), (2.5, [1000, 1000, 500])],
+)
+def test_timeout_keeps_the_same_buffer_for_a_new_destination(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+    clock: SimpleNamespace,
+    budget: float,
+    waits: list[int],
+) -> None:
+    """Preserve queue position and delivery count when the wait budget expires.
+
+    Advance a fake clock by each native wait. Retrying with a different caller
+    array must wait on the same buffer and deliver the first batch normally.
+    """
+    session = digitizer.create_capture(
+        replace(settings, record_length=256, batch_count=1)
+    )
+    try:
+        session.prepare()
+        session.start()
+        original = sdk.board.wait_async_buffer_complete.side_effect
+        error = FakeAlazarError(579)
+
+        def timeout(address: int, *, timeout_ms: int) -> None:
+            """Consume the requested native waiting interval, then time out."""
+            clock.now += timeout_ms / 1000
+            raise error
+
+        sdk.board.wait_async_buffer_complete.side_effect = timeout
+        first = np.empty(session.layout.shape, dtype=session.layout.dtype)
+
+        with pytest.raises(TimeoutError, match="Timed out") as caught:
+            session.read_into(first, timeout=budget)
+
+        assert caught.value.__cause__ is error
+        assert session.state is CaptureState.STARTED
+        assert session.batches_acquired == 0
+        assert clock.now <= budget
+        calls = sdk.board.wait_async_buffer_complete.call_args_list
+        assert [item.kwargs["timeout_ms"] for item in calls] == waits
+        assert all(item.args[0] == 1 for item in calls)
+        assert sdk.board.post_async_buffer.call_count == 1
+
+        sdk.board.wait_async_buffer_complete.side_effect = original
+        second = np.empty_like(first)
+        assert session.read_into(second, timeout=0) is not None
+        np.testing.assert_array_equal(
+            second,
+            np.zeros(second.shape, dtype=second.dtype),
+        )
+        assert session.batches_acquired == 1
+        assert sdk.board.wait_async_buffer_complete.call_args.args[0] == 1
+    finally:
+        session.close()
+
+
+def test_none_timeout_retries_until_the_buffer_completes(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+) -> None:
+    """Implement an indefinite wait using repeated bounded native waits."""
+    session = digitizer.create_capture(
+        replace(settings, record_length=256, batch_count=1)
+    )
+    try:
+        session.prepare()
+        session.start()
+        original = sdk.board.wait_async_buffer_complete.side_effect
+        assert callable(original)
+        attempts = 0
+
+        def complete_later(address: int, *, timeout_ms: int) -> None:
+            """Report two timeout intervals followed by successful completion."""
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise FakeAlazarError(579)
+            original(address, timeout_ms=timeout_ms)
+
+        sdk.board.wait_async_buffer_complete.side_effect = complete_later
+        destination = np.empty(session.layout.shape, dtype=session.layout.dtype)
+        assert session.read_into(destination, timeout=None) is not None
+
+        calls = sdk.board.wait_async_buffer_complete.call_args_list
+        assert [item.kwargs["timeout_ms"] for item in calls] == [1000, 1000, 1000]
+        assert session.batches_acquired == 1
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("code", [573, 582])
+def test_other_sdk_read_failures_preserve_error_and_close(
+    capture: DigitizerCaptureSession,
+    sdk: FakeSDK,
+    code: int,
+) -> None:
+    """Treat queue errors and overflow as fatal rather than retryable timeouts."""
+    capture.prepare()
+    capture.start()
+    failure = FakeAlazarError(code)
+    sdk.board.wait_async_buffer_complete.side_effect = failure
+    destination = np.empty(capture.layout.shape, dtype=capture.layout.dtype)
+
+    with pytest.raises(FakeAlazarError) as caught:
+        capture.read_into(destination, timeout=0)
+
+    assert caught.value is failure
+    assert capture.state is CaptureState.CLOSED
+    sdk.board.abort_async_read.assert_called_once()
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+@pytest.mark.parametrize("code", [518, 579])
+def test_repost_failure_closes_capture_without_delivering_a_batch(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+    code: int,
+) -> None:
+    """Preserve failed reposts and clean up even when sample copying succeeded."""
+    session = digitizer.create_capture(replace(settings, dma_buffer_count=1))
+    try:
+        session.prepare()
+        session.start()
+        failure = FakeAlazarError(code)
+        sdk.board.post_async_buffer.side_effect = failure
+        destination = np.empty(session.layout.shape, dtype=session.layout.dtype)
+
+        with pytest.raises(FakeAlazarError) as caught:
+            session.read_into(destination, timeout=0)
+
+        assert caught.value is failure
+        assert session.state is CaptureState.CLOSED
+        assert session.batches_acquired == 0
+        sdk.board.abort_async_read.assert_called_once()
+        assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("invalid", ["dtype", "length"])
+def test_invalid_native_storage_is_fatal(
+    capture: DigitizerCaptureSession,
+    sdk: FakeSDK,
+    invalid: str,
+) -> None:
+    """Reject unexpected native sample storage and release owned resources."""
+    capture.prepare()
+    capture.start()
+    raw = sdk.buffers[0].buffer
+    sdk.buffers[0].buffer = (
+        raw.astype(np.uint8) if invalid == "dtype" else raw.reshape(-1)[:-1]
+    )
+    sdk.board.wait_async_buffer_complete.side_effect = None
+    destination = np.empty(capture.layout.shape, dtype=capture.layout.dtype)
+
+    with pytest.raises(RuntimeError, match="DMA sample layout"):
+        capture.read_into(destination, timeout=0)
+
+    assert capture.state is CaptureState.CLOSED
+    sdk.board.abort_async_read.assert_called_once()
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+def test_installed_entry_point_loads_without_sdk_initialization(sdk: FakeSDK) -> None:
+    """Expose installed driver metadata without initializing the native SDK."""
+    entries = importlib_metadata.entry_points(
+        group="dirigo.devices.digitizers",
+        name="alazar",
+    )
+
+    assert len(entries) == 1
+    assert next(iter(entries)).load() is AlazarDigitizer
+    sdk.load.assert_not_called()

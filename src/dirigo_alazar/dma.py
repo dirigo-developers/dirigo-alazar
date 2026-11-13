@@ -1,7 +1,11 @@
 """Own native DMA buffers until transfers stop and cleanup succeeds."""
 
+from time import monotonic
 from types import ModuleType
 from typing import TYPE_CHECKING
+
+import numpy as np
+from dirigo.hardware.capture import SampleArray
 
 from dirigo_alazar.settings import AlazarCaptureSettings
 
@@ -30,6 +34,14 @@ class _DMAPool:
         self.buffers: list[Buffer] = []
         self._pending = False
 
+        self._completed = 0
+        self._posted = 0
+        self._sample_bits: int | None = None
+        physical_order = sorted(settings.channel_indices)
+        self._channel_order = tuple(
+            physical_order.index(index) for index in settings.channel_indices
+        )
+
     def prepare(self) -> None:
         """Allocate every buffer before configuring DMA and posting the pool.
 
@@ -49,6 +61,8 @@ class _DMAPool:
             raise RuntimeError(
                 "Install atsbindings with explicit Buffer.close() support."
             )
+        if not isinstance(getattr(self._sdk, "AlazarError", None), type):
+            raise RuntimeError("Install atsbindings with AlazarError support.")
 
         if not self._board.query_capability(ats.Capabilities.CAP_SUPPORTS_NPT_AUTODMA):
             raise NotImplementedError("This board does not support NPT AutoDMA.")
@@ -58,6 +72,7 @@ class _DMAPool:
             raise ValueError("This physical-channel combination is not supported.")
 
         memory, bits = self._board.get_channel_info()
+        self._sample_bits = bits
         if memory == 0:
             raise NotImplementedError(
                 "This first DMA backend requires on-board memory."
@@ -109,6 +124,7 @@ class _DMAPool:
         )
         for buffer in self.buffers:
             self._board.post_async_buffer(buffer.address, buffer.size)
+            self._posted += 1
 
     def start(self) -> None:
         """Arm the prepared run without waiting for a record trigger."""
@@ -142,6 +158,88 @@ class _DMAPool:
 
         if failure is not None:
             raise failure
+
+    def read_into(self, destination: SampleArray, *, timeout: float | None) -> None:
+        """Copy one completed NPT batch, then repost if more work remains.
+
+        The session validates destination and timeout before this hook runs.
+        Native storage is channel-major, with physical channels in ascending
+        order. Copy into caller storage before allowing DMA to reuse a buffer.
+        """
+        settings = self._settings
+        buffer = self.buffers[self._completed % len(self.buffers)]
+        self._wait_for_buffer(buffer, timeout=timeout)
+
+        bits = self._sample_bits
+        assert bits is not None
+        unsigned = np.dtype(np.uint8 if bits <= 8 else np.uint16)
+        channels = len(settings.channel_indices)
+        records = settings.records_per_batch
+        length = settings.record_length
+
+        raw = buffer.buffer
+        if (
+            not isinstance(raw, np.ndarray)
+            or raw.dtype != unsigned
+            or raw.size != channels * records * length
+            or not raw.flags.c_contiguous
+        ):
+            raise RuntimeError("Unexpected Alazar DMA sample layout.")
+
+        native = raw.reshape(channels, records, length)
+        storage_bits = unsigned.itemsize * 8
+        sign_bit = 1 << (storage_bits - 1)
+
+        for target, source in enumerate(self._channel_order):
+            np.bitwise_xor(
+                native[source],
+                sign_bit,
+                out=destination[:, :, target].view(unsigned),
+            )
+
+        shift = storage_bits - bits
+        if shift:
+            np.right_shift(destination, shift, out=destination)
+
+        count = settings.batch_count
+        assert count is not None
+        if self._posted < count:
+            self._board.post_async_buffer(buffer.address, buffer.size)
+            self._posted += 1
+
+        self._completed += 1
+
+    def _wait_for_buffer(self, buffer: Buffer, *, timeout: float | None) -> None:
+        """Wait in bounded SDK calls, preserving queue position on timeout.
+
+        SDK waits use milliseconds, rounded down; a submillisecond remainder
+        polls. None retries bounded waits indefinitely without relying on a
+        special native infinity value. Only ApiWaitTimeout (579) is retryable.
+        """
+        deadline = None if timeout is None else monotonic() + timeout
+
+        while True:
+            remaining = (
+                1.0 if deadline is None else min(1.0, max(0.0, deadline - monotonic()))
+            )
+            milliseconds = int(remaining * 1000)
+
+            try:
+                self._board.wait_async_buffer_complete(
+                    buffer.address,
+                    timeout_ms=milliseconds,
+                )
+            except self._sdk.AlazarError as exc:
+                if exc.code != 579:
+                    raise
+                if deadline is not None and (
+                    milliseconds == 0 or monotonic() >= deadline
+                ):
+                    raise TimeoutError(
+                        "Timed out waiting for an Alazar DMA buffer."
+                    ) from exc
+            else:
+                return
 
 
 _retained_pools: set[_DMAPool] = set()

@@ -1,0 +1,23 @@
+# Copy to hardware_local.toml and adjust for the connected board.
+
+[devices.digitizer]
+category = "digitizers"
+driver = "alazar"
+
+[devices.digitizer.config]
+system_id = 1
+board_id = 1
+
+[test.capture]
+digitizer = "digitizer"
+sample_rate = "100 MS/s"
+record_length = 4096
+records_per_batch = 2
+batch_count = 4
+channel_indices = [0, 1]
+input_voltage_range = {min = "-1 V", max = "1 V"}
+input_impedance = "50 ohm"
+input_coupling = "DC"
+trigger_edge = "rising"
+dma_buffer_count = 2
+timeout = "5 s"

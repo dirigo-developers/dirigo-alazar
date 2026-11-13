@@ -50,3 +50,6 @@ select = [
 
 [tool.ty.environment]
 python-version = "3.14"
+
+[project.entry-points."dirigo.devices.digitizers"]
+alazar = "dirigo_alazar.digitizer:AlazarDigitizer"
