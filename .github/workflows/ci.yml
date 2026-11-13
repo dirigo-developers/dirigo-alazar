@@ -32,7 +32,7 @@ jobs:
         shell: python
         run: |
           raise SystemExit(
-              "Set repository variable DIRIGO_REF to the Dirigo v0.4 branch or commit."
+              "Set repository variable DIRIGO_REF to the Dirigo v0.4 branch."
           )
 
       - name: Check out Dirigo
@@ -44,6 +44,24 @@ jobs:
 
       - name: Install Dirigo
         run: python -m pip install -e ../dirigo
+      
+      - name: Require the atsbindings development revision
+        if: vars.ATSBINDINGS_REF == ''
+        shell: python
+        run: |
+          raise SystemExit(
+              "Set repository variable ATSBINDINGS_REF to the atsbindings v0.3 branch."
+          )
+      
+      - name: Check out atsbindings
+        uses: actions/checkout@v7
+        with:
+          repository: tweber225/atsbindings
+          ref: ${{ vars.ATSBINDINGS_REF }}
+          path: atsbindings
+
+      - name: Install atsbindings
+        run: python -m pip install -e ../atsbindings
 
       - name: Install dirigo-alazar and development dependencies
         run: python -m pip install -e ".[dev]"

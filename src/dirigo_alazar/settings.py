@@ -79,7 +79,7 @@ class AlazarCaptureSettings(CaptureSettings):
     analog ranges require a finite voltage threshold within their bounds.
     The backend translates requested thresholds to the SDK's discrete codes.
 
-    dma_buffer_count controls the number of reusable transfer buffers, not
+    dma_buffer_count controls the maximum number of reusable transfer buffers, not
     the total number of batches. Generic sample timing, record windows, and
     batch geometry retain their CaptureSettings meanings. This model does
     not establish that a board supports a requested acquisition mode.

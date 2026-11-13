@@ -14,7 +14,8 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "dirigo>=0.4",
-    "atsbindings>=0.2.3"
+    "atsbindings>=0.3",
+    "numpy",
 ]
 
 [project.optional-dependencies]
