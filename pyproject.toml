@@ -1,36 +1,51 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dirigo_alazar"
-version = "0.2.7"
+name = "dirigo-alazar"
+version = "0.3"
 description = "Plugin to use Alazar cards with Dirigo"
 authors = [
     {name = "T. D. Weber", email = "tweber@mit.edu"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.11"
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: Microsoft :: Windows",
-  "Topic :: System :: Hardware"
-]
+requires-python = ">=3.14"
 dependencies = [
-    "numba",
-    "dirigo",
+    "dirigo>=0.4",
     "atsbindings>=0.2.3"
 ]
-urls = {"Homepage" = "https://github.com/dirigo-developers/dirigo-alazar"}
 
-[project.entry-points."dirigo_digitizers"]
-alazar = "dirigo_alazar:AlazarDigitizer"
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff==0.17.4",
+    "ty==0.0.99",
+]
 
-# new format
-[project.entry-points."dirigo.devices.digitizer"]
-alazar = "dirigo_alazar:AlazarDigitizer"
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=dirigo_alazar --cov-report=term-missing --import-mode=importlib"
+markers = [
+    "hardware: accesses physical equipment and requires --hardware",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+preview = true
+explicit-preview-rules = true
+select = [
+    "E", "W", "F", "I", "UP", "B", "SIM", "ANN", "PT", "RUF", "N", "NPY",
+    "PERF", "E302",
+]
+
+[tool.ty.environment]
+python-version = "3.14"
