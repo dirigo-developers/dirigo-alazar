@@ -179,3 +179,18 @@ def test_dma_buffer_count_is_positive(
     """Reject a DMA buffer pool that cannot supply a transfer buffer."""
     with pytest.raises(ValueError, match="dma_buffer_count"):
         replace(settings, dma_buffer_count=count)
+
+
+def test_aux_output_defaults_to_unmanaged(settings: AlazarCaptureSettings) -> None:
+    """Keep AUX configuration opt-in rather than assigning a pin mode implicitly."""
+    assert settings.aux_output_mode is None
+
+
+@pytest.mark.parametrize("value", ["acquisition_active", True, 0])
+def test_aux_output_requires_a_typed_mode(
+    settings: AlazarCaptureSettings,
+    value: object,
+) -> None:
+    """Reject strings, booleans, and raw SDK integers as AUX mode substitutes."""
+    with pytest.raises(TypeError, match="aux_output_mode"):
+        replace(settings, aux_output_mode=value)

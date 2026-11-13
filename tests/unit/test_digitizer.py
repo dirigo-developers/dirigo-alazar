@@ -26,6 +26,7 @@ from dirigo_alazar.digitizer import AlazarDigitizer
 from dirigo_alazar.settings import (
     AlazarCaptureSettings,
     AlazarDigitizerConfig,
+    AuxOutputMode,
     Coupling,
     ExternalTriggerRange,
 )
@@ -74,6 +75,7 @@ def sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDK:
         "TriggerSlopes": "TRIGGER_SLOPE_POSITIVE TRIGGER_SLOPE_NEGATIVE",
         "Capabilities": "GET_SERIAL_NUMBER CAP_SUPPORTS_NPT_AUTODMA",
         "Parameters": "PACK_MODE SET_DATA_FORMAT",
+        "AuxIOModes": "AUX_OUT_TRIGGER AUX_OUT_SERIAL_DATA",
     }.items():
         setattr(ats, name, Enum(name, members))
 
@@ -987,3 +989,159 @@ def test_installed_entry_point_loads_without_sdk_initialization(sdk: FakeSDK) ->
     assert len(entries) == 1
     assert next(iter(entries)).load() is AlazarDigitizer
     sdk.load.assert_not_called()
+
+
+def test_requesting_aux_output_does_not_load_sdk(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+) -> None:
+    """Retain passive session construction when AUX configuration is requested."""
+    request = replace(
+        settings,
+        aux_output_mode=AuxOutputMode.ACQUISITION_ACTIVE,
+    )
+    capture = digitizer.create_capture(request)
+    try:
+        sdk.load.assert_not_called()
+        sdk.board.configure_aux_io.assert_not_called()
+    finally:
+        capture.close()
+
+    sdk.load.assert_not_called()
+    sdk.board.configure_aux_io.assert_not_called()
+
+
+def test_default_capture_leaves_aux_unmanaged(
+    capture: DigitizerCaptureSession,
+    sdk: FakeSDK,
+) -> None:
+    """Make no AUX configuration call during the default capture lifecycle."""
+    capture.prepare()
+    capture.start()
+    capture.stop()
+    capture.close()
+
+    sdk.board.configure_aux_io.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("requested", "native_name"),
+    [
+        (AuxOutputMode.ACQUISITION_ACTIVE, "AUX_OUT_TRIGGER"),
+        (AuxOutputMode.LOW, "AUX_OUT_SERIAL_DATA"),
+    ],
+)
+def test_prepare_configures_aux_before_dma_without_starting(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+    requested: AuxOutputMode,
+    native_name: str,
+) -> None:
+    """Translate each requested mode once, before allocating or posting DMA.
+
+    Record the AUX call alongside the existing allocation and DMA events.
+    Configuration must precede the first allocation, while capture remains
+    unstarted. Stop and close must not silently select another connector mode.
+    """
+    def configured(**kwargs: object) -> None:
+        """Record when the driver selects the AUX mode."""
+        sdk.events.append("aux")
+
+    sdk.board.configure_aux_io.side_effect = configured
+    capture = digitizer.create_capture(
+        replace(settings, aux_output_mode=requested)
+    )
+    try:
+        capture.prepare()
+
+        sdk.board.configure_aux_io.assert_called_once_with(
+            mode=getattr(sdk.ats.AuxIOModes, native_name),
+            parameter=0,
+        )
+        assert sdk.events[0] == "aux"
+        assert capture.state is CaptureState.PREPARED
+        sdk.board.start_capture.assert_not_called()
+
+        capture.start()
+        capture.stop()
+    finally:
+        capture.close()
+
+    sdk.board.configure_aux_io.assert_called_once()
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+def test_later_capture_can_explicitly_select_low_aux_output(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+) -> None:
+    """Reconfigure a cached board on explicit requests, leaving None unmanaged.
+
+    Prepare three sessions on the same device: acquisition-active, static low,
+    then the default unmanaged mode. Only the first two select AUX modes. The
+    third does not restore a power-on default or perform another AUX write.
+    """
+    for mode in (AuxOutputMode.ACQUISITION_ACTIVE, AuxOutputMode.LOW, None):
+        capture = digitizer.create_capture(
+            replace(settings, aux_output_mode=mode)
+        )
+        try:
+            capture.prepare()
+        finally:
+            capture.close()
+
+    assert sdk.board.configure_aux_io.call_args_list == [
+        call(
+            mode=sdk.ats.AuxIOModes.AUX_OUT_TRIGGER,
+            parameter=0,
+        ),
+        call(
+            mode=sdk.ats.AuxIOModes.AUX_OUT_SERIAL_DATA,
+            parameter=0,
+        ),
+    ]
+    sdk.load.assert_called_once_with("atsbindings")
+    sdk.factory.assert_called_once_with(1, 1)
+
+
+def test_aux_configuration_failure_prevents_dma_and_releases_reservation(
+    digitizer: AlazarDigitizer,
+    settings: AlazarCaptureSettings,
+    sdk: FakeSDK,
+) -> None:
+    """Preserve an SDK configuration failure without allocating capture buffers.
+
+    A failed preparation closes the session and releases the logical device.
+    After the failing call is repaired, a fresh explicitly configured session
+    can prepare and close using the already-discovered board.
+    """
+    request = replace(
+        settings,
+        aux_output_mode=AuxOutputMode.ACQUISITION_ACTIVE,
+    )
+    capture = digitizer.create_capture(request)
+    failure = RuntimeError("AUX configuration failed")
+    sdk.board.configure_aux_io.side_effect = failure
+
+    with pytest.raises(RuntimeError, match="AUX configuration failed") as caught:
+        capture.prepare()
+
+    assert caught.value is failure
+    assert capture.state is CaptureState.CLOSED
+    assert not digitizer.is_active
+    sdk.buffer_factory.assert_not_called()
+    sdk.board.before_async_read.assert_not_called()
+    sdk.board.start_capture.assert_not_called()
+
+    sdk.board.configure_aux_io.side_effect = None
+    retry = digitizer.create_capture(request)
+    try:
+        retry.prepare()
+    finally:
+        retry.close()
+
+    assert sdk.board.configure_aux_io.call_count == 2
+    sdk.load.assert_called_once_with("atsbindings")

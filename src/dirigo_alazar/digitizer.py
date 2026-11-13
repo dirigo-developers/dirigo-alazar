@@ -22,6 +22,7 @@ from dirigo_alazar.dma import _DMAPool
 from dirigo_alazar.settings import (
     AlazarCaptureSettings,
     AlazarDigitizerConfig,
+    AuxOutputMode,
     Coupling,
     ExternalTriggerRange,
 )
@@ -309,6 +310,15 @@ class _AlazarCaptureSession(DigitizerCaptureSession):
             pre_trigger_samples=0,
             post_trigger_samples=settings.record_length,
         )
+
+        aux = settings.aux_output_mode
+        if aux is not None:
+            mode = (
+                ats.AuxIOModes.AUX_OUT_TRIGGER
+                if aux is AuxOutputMode.ACQUISITION_ACTIVE
+                else ats.AuxIOModes.AUX_OUT_SERIAL_DATA
+            )
+            board.configure_aux_io(mode=mode, parameter=0)
 
         pool = _DMAPool(sdk, board, settings)
         self._pool = pool

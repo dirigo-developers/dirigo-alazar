@@ -83,6 +83,13 @@ class AlazarCaptureSettings(CaptureSettings):
     the total number of batches. Generic sample timing, record windows, and
     batch geometry retain their CaptureSettings meanings. This model does
     not establish that a board supports a requested acquisition mode.
+
+    aux_output_mode=None makes no AUX configuration call; the mode established
+    by SDK initialization or a previous run remains in effect. An explicit mode
+    is applied in prepare() and remains configured after close(); previous pin
+    modes are not restored. Use LOW in a later request to select a static low.
+    ACQUISITION_ACTIVE selects the SDK's AUX_OUT_TRIGGER signal, not an echo
+    of every incoming record trigger or a source of software timestamps.
     """
 
     input_voltage_range: units.VoltageRange
@@ -92,10 +99,16 @@ class AlazarCaptureSettings(CaptureSettings):
     external_trigger_coupling: Coupling = Coupling.DC
     external_trigger_level: units.Voltage | None = None
     dma_buffer_count: int = 4
+    aux_output_mode: AuxOutputMode | None = None
 
     def __post_init__(self) -> None:
         """Validate inherited geometry and board-independent electrical bounds."""
         CaptureSettings.__post_init__(self)
+
+        if self.aux_output_mode is not None and not isinstance(
+            self.aux_output_mode, AuxOutputMode
+        ):
+            raise TypeError("aux_output_mode must be an AuxOutputMode or None.")
 
         if not isinstance(self.input_voltage_range, units.VoltageRange):
             raise TypeError("input_voltage_range must be a VoltageRange.")
@@ -149,3 +162,15 @@ class AlazarCaptureSettings(CaptureSettings):
             raise TypeError("dma_buffer_count must be an integer.")
         if self.dma_buffer_count <= 0:
             raise ValueError("dma_buffer_count must be positive.")
+
+
+class AuxOutputMode(StrEnum):
+    """Select the software-configurable AUX output for a capture.
+
+    ACQUISITION_ACTIVE is high while samples are acquired to onboard memory.
+    LOW selects a static low output. Connector labels and support depend on
+    the board. These modes do not configure the record-trigger input.
+    """
+
+    ACQUISITION_ACTIVE = "acquisition_active"
+    LOW = "low"
