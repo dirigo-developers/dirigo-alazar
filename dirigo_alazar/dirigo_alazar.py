@@ -376,7 +376,7 @@ class AlazarTrigger(digitizer.Trigger):
         self._slope: digitizer.TriggerSlope | None = None
         self._external_coupling: digitizer.ExternalTriggerCoupling | None = None
         self._external_impedance: units.Resistance | digitizer.ImpedanceMode | None = None
-        self._external_range: units.VoltageRange | None = None
+        self._external_range: units.VoltageRange | digitizer.ExternalTriggerRange | None = None
         self._level: units.Voltage = units.Voltage("0 V") # level is an 8-bit value in ATSApi
 
     @property
@@ -564,7 +564,7 @@ class AlazarTrigger(digitizer.Trigger):
         ranges = []
         for ats_range in self._board.bsi.external_trigger_ranges:
             if ats_range == Ats.ExternalTriggerRanges.ETR_TTL:
-                ranges.append(units.VoltageRange("0 V", "5 V"))
+                ranges.append(units.VoltageRange("0 V", "3.3 V"))
             elif ats_range == Ats.ExternalTriggerRanges.ETR_1V_50OHM:
                 ranges.append(units.VoltageRange("-1 V", "1 V"))
             elif ats_range == Ats.ExternalTriggerRanges.ETR_2V5_50OHM:
@@ -614,7 +614,7 @@ class AlazarTrigger(digitizer.Trigger):
 
             if self._external_impedance == digitizer.ImpedanceMode.HIGH:
                 # check that the voltage range is consistent with TTL
-                if self._external_range == units.VoltageRange("0 V", "5 V"):
+                if self._external_range == units.VoltageRange("0 V", "3.3 V"):
                     ats_rng = Ats.ExternalTriggerRanges.ETR_TTL
                 
             elif self._external_impedance == units.Resistance("50 ohm"):
