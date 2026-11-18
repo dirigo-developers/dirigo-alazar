@@ -1,5 +1,6 @@
 """Alazar connections and preparation of finite externally triggered records."""
 
+from dataclasses import fields
 from importlib import import_module
 from importlib import metadata as importlib_metadata
 from types import ModuleType
@@ -14,8 +15,17 @@ from dirigo.hardware.capture import (
     SampleArray,
 )
 from dirigo.hardware.capture_session import DigitizerCaptureSession
-from dirigo.hardware.digitizer import Digitizer
+from dirigo.hardware.digitizer import (
+    ChannelCoupling,
+    Digitizer,
+    DigitizerProfile,
+    ExternalTriggerCoupling,
+)
+from dirigo.hardware.digitizer import (
+    ExternalTriggerRange as ProfileTriggerRange,
+)
 from dirigo.hardware.metadata import DeviceIdentity, DriverIdentity
+from dirigo.hardware.profiles import capture_settings_from_profile
 from dirigo.hardware.timing import SignalEdge
 
 from dirigo_alazar.dma import _DMAPool
@@ -140,14 +150,144 @@ class AlazarDigitizer(Digitizer):
         if self._channel_count is not None:
             super()._validate_channel_indices(indices)
 
-    def _create_capture(self, settings: CaptureSettings) -> DigitizerCaptureSession:
-        """Reject unsupported modes without querying or configuring the board."""
+    def _create_capture(
+        self,
+        settings: CaptureSettings,
+    ) -> DigitizerCaptureSession:
+        """Validate complete settings and construct an unprepared session.
+
+        Construction does not load the SDK, access hardware, or reserve
+        the digitizer.
+        """
         if self._dma_pool is not None and self._capture_owner is None:
             raise RuntimeError("Previous DMA cleanup failed; close this digitizer.")
+
         if not isinstance(settings, AlazarCaptureSettings):
             raise TypeError("Alazar capture requires AlazarCaptureSettings.")
 
+        self._validate_capture_settings(settings)
+        return _AlazarCaptureSession(self, settings)
+
+    def _create_profile_capture(
+        self,
+        profile: DigitizerProfile,
+    ) -> DigitizerCaptureSession:
+        """Construct Alazar capture with deferred geometry."""
+        if self._dma_pool is not None and self._capture_owner is None:
+            raise RuntimeError("Previous DMA cleanup failed; close this digitizer.")
+
+        return _AlazarCaptureSession(self, profile=profile)
+
+    def _settings_from_profile(
+        self,
+        profile: DigitizerProfile,
+        *,
+        record_length: int,
+        records_per_batch: int,
+        batch_count: int | None,
+        timestamps_enabled: bool,
+        trigger_offset_samples: int,
+    ) -> AlazarCaptureSettings:
+        """Resolve profile settings supported by the present Alazar backend."""
+        selected = tuple(channel for channel in profile.channels if channel.enabled)
+        first = selected[0]
+
+        if first.input_range is None:
+            raise ValueError(
+                "Alazar profiles must specify enabled-channel input ranges."
+            )
+
+        if not isinstance(first.impedance, units.Resistance):
+            raise ValueError("Alazar profiles must specify a numeric input impedance.")
+
+        for channel in selected:
+            if (
+                channel.input_range != first.input_range
+                or channel.impedance != first.impedance
+                or channel.coupling != first.coupling
+            ):
+                raise NotImplementedError(
+                    "Alazar capture currently requires shared range, "
+                    "impedance, and coupling across enabled channels."
+                )
+
+            if channel.inverted or channel.offset is not None:
+                raise NotImplementedError(
+                    "The current Alazar backend does not implement "
+                    "profile inversion or offset."
+                )
+
+        if first.coupling not in (
+            None,
+            ChannelCoupling.AC,
+            ChannelCoupling.DC,
+        ):
+            raise NotImplementedError("Unsupported Alazar input coupling.")
+
+        trigger = profile.trigger
+
+        if trigger.level is not None:
+            raise NotImplementedError(
+                "The current Alazar backend supports TTL triggering "
+                "without an adjustable trigger level."
+            )
+
+        if trigger.external_coupling not in (
+            None,
+            ExternalTriggerCoupling.DC,
+        ):
+            raise NotImplementedError(
+                "The current Alazar backend requires DC-coupled triggers."
+            )
+
+        if trigger.external_range not in (
+            None,
+            ProfileTriggerRange.TTL,
+        ):
+            raise NotImplementedError(
+                "The current Alazar backend requires the named TTL trigger mode."
+            )
+
+        if trigger.external_impedance is not None:
+            raise NotImplementedError(
+                "The current Alazar backend does not implement independent "
+                "external-trigger impedance selection."
+            )
+
+        common = capture_settings_from_profile(
+            profile,
+            record_length=record_length,
+            records_per_batch=records_per_batch,
+            batch_count=batch_count,
+            timestamps_enabled=timestamps_enabled,
+            trigger_offset_samples=trigger_offset_samples,
+        )
+
+        settings = AlazarCaptureSettings(
+            **{
+                item.name: getattr(common, item.name)
+                for item in fields(CaptureSettings)
+            },
+            input_voltage_range=first.input_range,
+            input_impedance=first.impedance,
+            input_coupling=(
+                Coupling.AC if first.coupling is ChannelCoupling.AC else Coupling.DC
+            ),
+        )
+        self._validate_capture_settings(settings)
+        return settings
+
+    @staticmethod
+    def _validate_capture_settings(
+        settings: AlazarCaptureSettings,
+    ) -> None:
+        """Reject unsupported acquisition modes without accessing hardware.
+
+        Board-specific checks remain deferred until preparation. This
+        validation also applies to settings translated from a stored profile.
+        """
         trigger = settings.record_trigger
+
         if (
             settings.batch_count is None
             or settings.external_clock is not None
@@ -160,11 +300,10 @@ class AlazarDigitizer(Digitizer):
             or settings.external_trigger_coupling is not Coupling.DC
         ):
             raise NotImplementedError(
-                "This backend currently prepares finite, internally clocked records "
-                "with external DC-coupled TTL triggers, zero offset, and no timestamps."
+                "This backend currently prepares finite, internally clocked "
+                "records with external DC-coupled TTL triggers, zero offset, "
+                "and no timestamps."
             )
-
-        return _AlazarCaptureSession(self, settings)
 
     def _close(self) -> None:
         """Retry retained DMA cleanup; native board handles remain SDK-owned."""
@@ -179,17 +318,31 @@ class _AlazarCaptureSession(DigitizerCaptureSession):
     def __init__(
         self,
         digitizer: AlazarDigitizer,
-        settings: AlazarCaptureSettings,
+        settings: AlazarCaptureSettings | None = None,
+        *,
+        profile: DigitizerProfile | None = None,
     ) -> None:
-        """Retain the request without accessing the SDK or reserving inputs."""
-        super().__init__(
-            digitizer,
-            batch_count=settings.batch_count,
-            timestamps_enabled=settings.timestamps_enabled,
-        )
+        """Accept complete settings or an immutable profile snapshot."""
+        if (settings is None) == (profile is None):
+            raise ValueError("Supply exactly one of settings or profile.")
+
+        super().__init__(digitizer, profile=profile)
+
+        if settings is not None:
+            self._set_capture_settings(settings)
+
         self._device = digitizer
-        self._settings = settings
         self._pool: _DMAPool | None = None
+
+    @property
+    def settings(self) -> AlazarCaptureSettings:
+        """Complete Alazar request after configuration."""
+        settings = super().settings
+
+        if not isinstance(settings, AlazarCaptureSettings):
+            raise TypeError("Alazar capture requires AlazarCaptureSettings.")
+
+        return settings
 
     def _prepare_capture(self) -> CaptureLayout:
         """Configure the board, allocate and post buffers, without arming capture.
@@ -201,7 +354,7 @@ class _AlazarCaptureSession(DigitizerCaptureSession):
         sdk, board = self._device._connect()
         ats = sdk.Ats
         info = board.bsi
-        settings = self._settings
+        settings = self.settings
         self._device._validate_channel_indices(settings.channel_indices)
 
         if (

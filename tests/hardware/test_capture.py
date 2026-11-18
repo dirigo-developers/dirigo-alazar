@@ -8,9 +8,8 @@ from time import monotonic
 
 import numpy as np
 import pytest
-from dirigo import units
+from dirigo import load_system, units
 from dirigo.hardware.capture_session import CaptureState
-from dirigo.hardware.config import load_hardware
 from dirigo.hardware.timing import DigitalRecordTrigger, SignalEdge
 
 from dirigo_alazar.digitizer import AlazarDigitizer
@@ -70,9 +69,9 @@ def test_finite_external_trigger_capture() -> None:
         raise ValueError("The hardware test requires finite batch_count.")
 
     with ExitStack() as cleanup:
-        hardware = load_hardware(config_path)
-        cleanup.callback(hardware.close)
-        digitizer = hardware.require(parameters["digitizer"], AlazarDigitizer)
+        system = load_system(config_path)
+        cleanup.callback(system.close)
+        digitizer = system.require_device(parameters["digitizer"], AlazarDigitizer)
 
         capture = digitizer.create_capture(request)
         cleanup.callback(capture.close)

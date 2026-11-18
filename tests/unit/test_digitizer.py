@@ -1045,14 +1045,13 @@ def test_prepare_configures_aux_before_dma_without_starting(
     Configuration must precede the first allocation, while capture remains
     unstarted. Stop and close must not silently select another connector mode.
     """
+
     def configured(**kwargs: object) -> None:
         """Record when the driver selects the AUX mode."""
         sdk.events.append("aux")
 
     sdk.board.configure_aux_io.side_effect = configured
-    capture = digitizer.create_capture(
-        replace(settings, aux_output_mode=requested)
-    )
+    capture = digitizer.create_capture(replace(settings, aux_output_mode=requested))
     try:
         capture.prepare()
 
@@ -1085,9 +1084,7 @@ def test_later_capture_can_explicitly_select_low_aux_output(
     third does not restore a power-on default or perform another AUX write.
     """
     for mode in (AuxOutputMode.ACQUISITION_ACTIVE, AuxOutputMode.LOW, None):
-        capture = digitizer.create_capture(
-            replace(settings, aux_output_mode=mode)
-        )
+        capture = digitizer.create_capture(replace(settings, aux_output_mode=mode))
         try:
             capture.prepare()
         finally:
