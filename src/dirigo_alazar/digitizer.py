@@ -162,11 +162,8 @@ class AlazarDigitizer(Digitizer):
         if self._dma_pool is not None and self._capture_owner is None:
             raise RuntimeError("Previous DMA cleanup failed; close this digitizer.")
 
-        if not isinstance(settings, AlazarCaptureSettings):
-            raise TypeError("Alazar capture requires AlazarCaptureSettings.")
-
-        self._validate_capture_settings(settings)
-        return _AlazarCaptureSession(self, settings)
+        validated = self._validate_capture_settings(settings)
+        return _AlazarCaptureSession(self, validated)
 
     def _create_profile_capture(
         self,
@@ -277,15 +274,18 @@ class AlazarDigitizer(Digitizer):
         self._validate_capture_settings(settings)
         return settings
 
-    @staticmethod
     def _validate_capture_settings(
-        settings: AlazarCaptureSettings,
-    ) -> None:
+        self,
+        settings: CaptureSettings,
+    ) -> AlazarCaptureSettings:
         """Reject unsupported acquisition modes without accessing hardware.
 
         Board-specific checks remain deferred until preparation. This
         validation also applies to settings translated from a stored profile.
         """
+        if not isinstance(settings, AlazarCaptureSettings):
+            raise TypeError("Alazar capture requires AlazarCaptureSettings.")
+
         trigger = settings.record_trigger
 
         if (
@@ -304,6 +304,7 @@ class AlazarDigitizer(Digitizer):
                 "records with external DC-coupled TTL triggers, zero offset, "
                 "and no timestamps."
             )
+        return settings
 
     def _close(self) -> None:
         """Retry retained DMA cleanup; native board handles remain SDK-owned."""

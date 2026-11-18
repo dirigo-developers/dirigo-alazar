@@ -1,6 +1,7 @@
 """Exercise Alazar preparation without loading the native SDK."""
 
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import Enum
 from importlib import metadata as importlib_metadata
@@ -13,6 +14,21 @@ import pytest
 from dirigo import units
 from dirigo.hardware.capture import CaptureSettings, SampleArray
 from dirigo.hardware.capture_session import CaptureState, DigitizerCaptureSession
+from dirigo.hardware.digitizer import (
+    ChannelCoupling,
+    ChannelProfile,
+    DigitizerProfile,
+    ExternalTriggerCoupling,
+    ImpedanceMode,
+    SampleClockProfile,
+    SampleClockSource,
+    TriggerProfile,
+    TriggerSlope,
+    TriggerSource,
+)
+from dirigo.hardware.digitizer import (
+    ExternalTriggerRange as ProfileTriggerRange,
+)
 from dirigo.hardware.timing import (
     DigitalRecordTrigger,
     DigitalStartTrigger,
@@ -1142,3 +1158,253 @@ def test_aux_configuration_failure_prevents_dma_and_releases_reservation(
 
     assert sdk.board.configure_aux_io.call_count == 2
     sdk.load.assert_called_once_with("atsbindings")
+
+
+def _alazar_profile() -> DigitizerProfile:
+    """Request the internal clock and TTL input supported by the fake board."""
+    return DigitizerProfile(
+        sample_clock=SampleClockProfile(
+            source=SampleClockSource.INTERNAL,
+            rate=units.SampleRate("100 MS/s"),
+        ),
+        channels=(
+            ChannelProfile(
+                enabled=True,
+                coupling=ChannelCoupling.DC,
+                impedance=units.Resistance("50 ohm"),
+                input_range=units.VoltageRange("±1 V"),
+            ),
+            ChannelProfile(
+                enabled=True,
+                coupling=ChannelCoupling.DC,
+                impedance=units.Resistance("50 ohm"),
+                input_range=units.VoltageRange("±1 V"),
+            ),
+        ),
+        trigger=TriggerProfile(
+            source=TriggerSource.EXTERNAL,
+            slope=TriggerSlope.RISING,
+            external_coupling=ExternalTriggerCoupling.DC,
+            external_range=ProfileTriggerRange.TTL,
+        ),
+    )
+
+
+def test_profile_construction_and_configuration_do_not_load_sdk(
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+) -> None:
+    """Resolve profile settings without board discovery or DMA allocation."""
+    profile = _alazar_profile()
+    digitizer.profile = profile
+
+    with closing(digitizer.create_capture()) as capture:
+        assert capture.profile is profile
+        assert capture.requested_sample_rate == units.SampleRate("100 MS/s")
+
+        with pytest.raises(RuntimeError, match="must be configured"):
+            capture.prepare()
+
+        assert capture.state is CaptureState.NEW
+
+        capture.configure(
+            record_length=256,
+            records_per_batch=2,
+            batch_count=1,
+        )
+
+        settings = capture.settings
+        assert isinstance(settings, AlazarCaptureSettings)
+        assert settings.channel_indices == (0, 1)
+        assert settings.input_voltage_range == units.VoltageRange("±1 V")
+        assert settings.input_impedance == units.Resistance("50 ohm")
+        assert settings.input_coupling is Coupling.DC
+        assert settings.record_trigger == DigitalRecordTrigger(
+            source="external",
+            active_edge=SignalEdge.RISING,
+        )
+
+        sdk.load.assert_not_called()
+        sdk.factory.assert_not_called()
+        sdk.buffer_factory.assert_not_called()
+        assert sdk.board.mock_calls == []
+
+    sdk.load.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("slope", "native_name"),
+    [
+        (TriggerSlope.RISING, "TRIGGER_SLOPE_POSITIVE"),
+        (TriggerSlope.FALLING, "TRIGGER_SLOPE_NEGATIVE"),
+    ],
+)
+def test_profile_capture_applies_trigger_and_delivers_data(
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+    slope: TriggerSlope,
+    native_name: str,
+) -> None:
+    """Translate profile settings and deferred geometry into native capture."""
+    profile = _alazar_profile()
+    digitizer.profile = replace(
+        profile,
+        trigger=replace(profile.trigger, slope=slope),
+    )
+
+    with closing(digitizer.create_capture()) as capture:
+        capture.configure(
+            record_length=256,
+            records_per_batch=2,
+            batch_count=1,
+        )
+        capture.prepare()
+
+        assert capture.state is CaptureState.PREPARED
+        assert capture.layout.shape == (2, 256, 2)
+        assert capture.layout.channel_indices == (0, 1)
+
+        sdk.board.set_capture_clock.assert_called_once_with(
+            sdk.ats.ClockSources.INTERNAL_CLOCK,
+            sdk.board.bsi.sample_rates[0],
+            sdk.ats.ClockEdges.CLOCK_EDGE_RISING,
+        )
+        sdk.board.set_record_size.assert_called_once_with(
+            pre_trigger_samples=0,
+            post_trigger_samples=256,
+        )
+
+        trigger_call = sdk.board.set_trigger_operation.call_args
+        assert trigger_call is not None
+        assert trigger_call.kwargs["slope1"] is getattr(
+            sdk.ats.TriggerSlopes,
+            native_name,
+        )
+
+        sdk.board.start_capture.assert_not_called()
+
+        capture.start()
+        samples = np.empty(
+            capture.layout.shape,
+            dtype=capture.layout.dtype,
+        )
+        info = capture.read_into(samples, timeout=0)
+
+        assert info is not None
+        assert info.timestamps is None
+        np.testing.assert_array_equal(samples, np.zeros_like(samples))
+
+        assert capture.state is CaptureState.COMPLETED
+        assert capture.read_into(samples, timeout=0) is None
+        sdk.board.wait_async_buffer_complete.assert_called_once()
+
+        # Capture EOF does not perform resource cleanup.
+        assert sdk.buffers
+        assert all(buffer.close.call_count == 0 for buffer in sdk.buffers)
+
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+@pytest.mark.parametrize(
+    ("unsupported", "message"),
+    [
+        ("external_clock", "external sample-clock route"),
+        ("analog_trigger_range", "named TTL"),
+        ("trigger_impedance", "independent external-trigger impedance"),
+    ],
+)
+def test_unsupported_profile_requests_fail_without_loading_sdk(
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+    unsupported: str,
+    message: str,
+) -> None:
+    """Reject profile settings the present adapter cannot implement."""
+    profile = _alazar_profile()
+
+    if unsupported == "external_clock":
+        profile = replace(
+            profile,
+            sample_clock=replace(
+                profile.sample_clock,
+                source=SampleClockSource.EXTERNAL,
+            ),
+        )
+    elif unsupported == "analog_trigger_range":
+        profile = replace(
+            profile,
+            trigger=replace(
+                profile.trigger,
+                external_range=units.VoltageRange("0 V", "3.3 V"),
+            ),
+        )
+    else:
+        profile = replace(
+            profile,
+            trigger=replace(
+                profile.trigger,
+                external_impedance=ImpedanceMode.HIGH,
+            ),
+        )
+
+    digitizer.profile = profile
+
+    with closing(digitizer.create_capture()) as capture:
+        with pytest.raises(NotImplementedError, match=message):
+            capture.configure(
+                record_length=256,
+                records_per_batch=2,
+                batch_count=1,
+            )
+
+        assert capture.state is CaptureState.NEW
+
+        # Failed configuration did not reserve the device.
+        digitizer.profile = _alazar_profile()
+
+    sdk.load.assert_not_called()
+    sdk.factory.assert_not_called()
+    sdk.buffer_factory.assert_not_called()
+
+
+def test_profile_record_geometry_is_checked_against_discovered_board(
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+) -> None:
+    """Defer board-specific geometry checks until SDK-backed preparation."""
+    digitizer.profile = _alazar_profile()
+
+    with closing(digitizer.create_capture()) as capture:
+        # Positive geometry is valid generically, but below this board's
+        # declared minimum record size.
+        capture.configure(
+            record_length=128,
+            records_per_batch=2,
+            batch_count=1,
+        )
+        sdk.load.assert_not_called()
+
+        with pytest.raises(ValueError, match="record_length"):
+            capture.prepare()
+
+        assert capture.state is CaptureState.CLOSED
+        sdk.buffer_factory.assert_not_called()
+        sdk.board.start_capture.assert_not_called()
+
+        # Preparation failure released the reservation. A new session can
+        # reuse the discovered board with valid geometry.
+        with closing(digitizer.create_capture()) as retry:
+            retry.configure(
+                record_length=256,
+                records_per_batch=2,
+                batch_count=1,
+            )
+            retry.prepare()
+
+            assert retry.state is CaptureState.PREPARED
+            assert retry.layout.shape == (2, 256, 2)
+
+    sdk.load.assert_called_once_with("atsbindings")
+    sdk.factory.assert_called_once_with(1, 1)
+    assert sdk.buffers
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
