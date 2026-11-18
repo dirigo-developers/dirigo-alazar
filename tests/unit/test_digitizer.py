@@ -5,6 +5,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import Enum
 from importlib import metadata as importlib_metadata
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, call
@@ -14,6 +15,7 @@ import pytest
 from dirigo import units
 from dirigo.hardware.capture import CaptureSettings, SampleArray
 from dirigo.hardware.capture_session import CaptureState, DigitizerCaptureSession
+from dirigo.hardware.config import load_system
 from dirigo.hardware.digitizer import (
     ChannelCoupling,
     ChannelProfile,
@@ -42,6 +44,7 @@ from dirigo_alazar.digitizer import AlazarDigitizer
 from dirigo_alazar.settings import (
     AlazarCaptureSettings,
     AlazarDigitizerConfig,
+    AlazarDigitizerProfile,
     AuxOutputMode,
     Coupling,
     ExternalTriggerRange,
@@ -1408,3 +1411,181 @@ def test_profile_record_geometry_is_checked_against_discovered_board(
     sdk.factory.assert_called_once_with(1, 1)
     assert sdk.buffers
     assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+def _write_alazar_profile(
+    directory: Path,
+    *,
+    options: str = "",
+) -> Path:
+    """Write a profile compatible with the fake board's capabilities."""
+    path = directory / "alazar_profile.toml"
+    path.write_text(
+        """
+channels = [
+    {enabled = true, coupling = "DC", impedance = "50 ohm", input_range = "±1 V"},
+    {enabled = false},
+]
+
+[sample_clock]
+source = "internal"
+rate = "100 MS/s"
+
+[trigger]
+source = "external"
+slope = "rising"
+external_coupling = "DC"
+external_range = "ttl"
+
+[driver]
+"""
+        + options,
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_profile_reader_preserves_unmanaged_aux_default(
+    tmp_path: Path,
+    sdk: FakeSDK,
+) -> None:
+    """Read a typed profile without loading the SDK or implicitly managing AUX."""
+    path = _write_alazar_profile(tmp_path)
+
+    profile = AlazarDigitizer.read_profile(path)
+
+    assert isinstance(profile, AlazarDigitizerProfile)
+    assert profile.dma_buffer_count == 4
+    assert profile.aux_output_mode is None
+
+    sdk.load.assert_not_called()
+    sdk.factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mode", "native_name"),
+    [
+        (AuxOutputMode.ACQUISITION_ACTIVE, "AUX_OUT_TRIGGER"),
+        (AuxOutputMode.LOW, "AUX_OUT_SERIAL_DATA"),
+    ],
+)
+def test_stored_profile_controls_dma_buffers_and_aux(
+    tmp_path: Path,
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+    mode: AuxOutputMode,
+    native_name: str,
+) -> None:
+    """Carry vendor defaults through deferred configuration into preparation."""
+    path = _write_alazar_profile(
+        tmp_path,
+        options=(f'dma_buffer_count = 2\naux_output_mode = "{mode.value}"\n'),
+    )
+    digitizer.profile = digitizer.read_profile(path)
+
+    with closing(digitizer.create_capture()) as capture:
+        capture.configure(
+            record_length=256,
+            records_per_batch=2,
+            batch_count=5,
+        )
+
+        settings = capture.settings
+        assert isinstance(settings, AlazarCaptureSettings)
+        assert settings.dma_buffer_count == 2
+        assert settings.aux_output_mode is mode
+
+        sdk.load.assert_not_called()
+        sdk.buffer_factory.assert_not_called()
+
+        capture.prepare()
+
+        assert len(sdk.buffers) == 2
+        sdk.board.configure_aux_io.assert_called_once_with(
+            mode=getattr(sdk.ats.AuxIOModes, native_name),
+            parameter=0,
+        )
+        sdk.board.start_capture.assert_not_called()
+
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)
+
+
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        ("dma_buffer_count = true\n", TypeError),
+        ("dma_buffer_count = 0\n", ValueError),
+        ('aux_output_mode = "unknown"\n', ValueError),
+        ("unexpected = true\n", ValueError),
+    ],
+)
+def test_profile_reader_rejects_invalid_vendor_options(
+    tmp_path: Path,
+    sdk: FakeSDK,
+    options: str,
+    error: type[Exception],
+) -> None:
+    """Reject malformed vendor options before native SDK initialization."""
+    path = _write_alazar_profile(tmp_path, options=options)
+
+    with pytest.raises(error):
+        AlazarDigitizer.read_profile(path)
+
+    sdk.load.assert_not_called()
+    sdk.factory.assert_not_called()
+
+
+def test_system_loader_uses_alazar_profile_reader(
+    tmp_path: Path,
+    sdk: FakeSDK,
+) -> None:
+    """Select the driver's reader before constructing profile-based capture."""
+    _write_alazar_profile(
+        tmp_path,
+        options=('dma_buffer_count = 2\naux_output_mode = "acquisition_active"\n'),
+    )
+
+    system_path = tmp_path / "system.toml"
+    system_path.write_text(
+        """
+[devices.digitizer]
+category = "digitizers"
+driver = "alazar"
+profile = "alazar_profile.toml"
+
+[devices.digitizer.config]
+system_id = 1
+board_id = 1
+""",
+        encoding="utf-8",
+    )
+
+    with closing(
+        load_system(
+            system_path,
+            drivers={
+                "digitizers": {
+                    "alazar": AlazarDigitizer,
+                },
+            },
+            sync_backends={},
+        )
+    ) as system:
+        digitizer = system.require_device("digitizer", AlazarDigitizer)
+
+        assert isinstance(digitizer.profile, AlazarDigitizerProfile)
+        assert digitizer.profile.aux_output_mode is AuxOutputMode.ACQUISITION_ACTIVE
+
+        with closing(digitizer.create_capture()) as capture:
+            capture.configure(
+                record_length=256,
+                records_per_batch=2,
+                batch_count=1,
+            )
+
+            settings = capture.settings
+            assert isinstance(settings, AlazarCaptureSettings)
+            assert settings.aux_output_mode is AuxOutputMode.ACQUISITION_ACTIVE
+
+        sdk.load.assert_not_called()
+        sdk.factory.assert_not_called()

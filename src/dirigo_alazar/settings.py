@@ -6,6 +6,8 @@ from enum import StrEnum
 
 from dirigo import units
 from dirigo.hardware.capture import CaptureSettings
+from dirigo.hardware.digitizer import DigitizerProfile
+from dirigo.hardware.profiles import validate_digitizer_profile
 
 
 class Coupling(StrEnum):
@@ -174,3 +176,34 @@ class AuxOutputMode(StrEnum):
 
     ACQUISITION_ACTIVE = "acquisition_active"
     LOW = "low"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AlazarDigitizerProfile(DigitizerProfile):
+    """Extend common digitizer defaults with Alazar transfer and AUX options.
+
+    aux_output_mode=None leaves AUX configuration unmanaged. An explicit
+    mode is applied during capture preparation.
+
+    dma_buffer_count controls reusable SDK transfer buffers independently
+    of the number of batches requested by an acquisition.
+    """
+
+    dma_buffer_count: int = 4
+    aux_output_mode: AuxOutputMode | None = None
+
+    def __post_init__(self) -> None:
+        """Validate common settings and Alazar-specific defaults."""
+        validate_digitizer_profile(self)
+
+        if type(self.dma_buffer_count) is not int:
+            raise TypeError("dma_buffer_count must be an integer.")
+
+        if self.dma_buffer_count <= 0:
+            raise ValueError("dma_buffer_count must be positive.")
+
+        if self.aux_output_mode is not None and not isinstance(
+            self.aux_output_mode,
+            AuxOutputMode,
+        ):
+            raise TypeError("aux_output_mode must be an AuxOutputMode or None.")

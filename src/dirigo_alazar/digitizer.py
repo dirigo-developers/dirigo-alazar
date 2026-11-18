@@ -3,6 +3,7 @@
 from dataclasses import fields
 from importlib import import_module
 from importlib import metadata as importlib_metadata
+from os import PathLike
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -29,9 +30,11 @@ from dirigo.hardware.profiles import capture_settings_from_profile
 from dirigo.hardware.timing import SignalEdge
 
 from dirigo_alazar.dma import _DMAPool
+from dirigo_alazar.profiles import load_alazar_digitizer_profile
 from dirigo_alazar.settings import (
     AlazarCaptureSettings,
     AlazarDigitizerConfig,
+    AlazarDigitizerProfile,
     AuxOutputMode,
     Coupling,
     ExternalTriggerRange,
@@ -186,6 +189,15 @@ class AlazarDigitizer(Digitizer):
         trigger_offset_samples: int,
     ) -> AlazarCaptureSettings:
         """Resolve profile settings supported by the present Alazar backend."""
+        if isinstance(profile, AlazarDigitizerProfile):
+            alazar_profile = profile
+        else:
+            alazar_profile = AlazarDigitizerProfile(
+                sample_clock=profile.sample_clock,
+                channels=profile.channels,
+                trigger=profile.trigger,
+            )
+
         selected = tuple(channel for channel in profile.channels if channel.enabled)
         first = selected[0]
 
@@ -270,6 +282,8 @@ class AlazarDigitizer(Digitizer):
             input_coupling=(
                 Coupling.AC if first.coupling is ChannelCoupling.AC else Coupling.DC
             ),
+            dma_buffer_count=alazar_profile.dma_buffer_count,
+            aux_output_mode=alazar_profile.aux_output_mode,
         )
         self._validate_capture_settings(settings)
         return settings
@@ -311,6 +325,13 @@ class AlazarDigitizer(Digitizer):
         if self._dma_pool is not None:
             self._dma_pool.close()
             self._dma_pool = None
+
+    @staticmethod
+    def read_profile(
+        path: str | PathLike[str],
+    ) -> AlazarDigitizerProfile:
+        """Read common and Alazar-specific defaults without SDK initialization."""
+        return load_alazar_digitizer_profile(path)
 
 
 class _AlazarCaptureSession(DigitizerCaptureSession):
