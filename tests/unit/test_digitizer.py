@@ -1589,3 +1589,34 @@ board_id = 1
 
         sdk.load.assert_not_called()
         sdk.factory.assert_not_called()
+
+
+def test_record_constraints_are_discovered_before_geometry(
+    digitizer: AlazarDigitizer,
+    sdk: FakeSDK,
+) -> None:
+    """Discover native limits without configuring capture or allocating DMA."""
+    digitizer.profile = _alazar_profile()
+
+    with closing(digitizer.create_capture()) as capture:
+        limits = capture.resolve_record_length_constraints()
+
+        assert limits == (256, 128)
+        assert capture.state is CaptureState.NEW
+
+        sdk.load.assert_called_once_with("atsbindings")
+        sdk.board.set_capture_clock.assert_not_called()
+        sdk.board.set_record_size.assert_not_called()
+        sdk.buffer_factory.assert_not_called()
+
+        capture.configure(
+            record_length=256,
+            records_per_batch=2,
+            batch_count=1,
+        )
+        capture.prepare()
+
+        assert capture.state is CaptureState.PREPARED
+        assert capture.layout.shape == (2, 256, 2)
+
+    assert all(buffer.close.call_count == 1 for buffer in sdk.buffers)

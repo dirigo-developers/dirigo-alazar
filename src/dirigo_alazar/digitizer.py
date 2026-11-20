@@ -528,3 +528,21 @@ class _AlazarCaptureSession(DigitizerCaptureSession):
             self._pool.close()
             self._device._dma_pool = None
             self._pool = None
+
+    def _resolve_record_length_constraints(self) -> tuple[int, int]:
+        """Discover board-specific record limits before configuring geometry."""
+        _, board = self._device._connect()
+
+        profile = self.profile
+        if profile is None:
+            indices = self.settings.channel_indices
+        else:
+            indices = tuple(
+                index
+                for index, channel in enumerate(profile.channels)
+                if channel.enabled
+            )
+
+        self._device._validate_channel_indices(indices)
+
+        return board.bsi.min_record_size, board.bsi.record_resolution
